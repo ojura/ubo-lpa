@@ -52,7 +52,7 @@ jobs:
       - name: Exercise Windows Chrome through Wine
         env:
           WINE_BIN: /opt/wine-devel/bin/wine
-          WINE_TCP_SHIM: auto
+          WINE_TCP_SHIM: always
           UBO_RELEASE_VERSION: 1.74.0
         run: |
           tests/e2e/setup-ubo-wine-harness.sh \

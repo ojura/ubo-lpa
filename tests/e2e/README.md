@@ -47,4 +47,6 @@ make -C tests/e2e/wine-tcp-preload check
 ```
 
 `WINE_TCP_SHIM_SOURCE_DIR` selects a different source directory for bridge
-development. The default is the source committed beside the harness.
+development. The default is the source committed beside the harness. The Wine
+GitHub Actions job forces the bridge on so the browser run exercises it even
+when the runner supports pathname AF_UNIX sockets.
