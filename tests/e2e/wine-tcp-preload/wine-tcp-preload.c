@@ -28,19 +28,19 @@
 #include <unistd.h>
 
 /*
- * Wine TCP master-socket shim
- * ---------------------------
+ * Wine master-socket bootstrap shim
+ * ---------------------------------
  *
  * Some sandboxes reject socket(AF_UNIX, ...), which prevents wineserver from
  * creating its pathname master socket.  They may still allow
  * socketpair(AF_UNIX, ...), including SCM_RIGHTS descriptor passing.
  *
  * This preload library translates only pathname AF_UNIX/SOCK_STREAM sockets
- * into loopback TCP sockets.  Every translated TCP connection receives a
- * native AF_UNIX socketpair side channel during connect/accept.  The far side
- * of that pair is copied once with pidfd_getfd().  Wine's sendmsg()/recvmsg()
- * traffic then travels unchanged over the side channel, while a byte on the
- * TCP socket mirrors message readiness for Wine's existing poll loop.
+ * into loopback TCP for rendezvous.  During connect/accept, the client creates
+ * a native socketpair and wineserver copies its far endpoint once with
+ * pidfd_getfd().  Both sides then replace the TCP descriptor with their native
+ * endpoint, so Wine's stream traffic, SCM_RIGHTS messages, and credentials
+ * retain native AF_UNIX ordering and semantics.
  */
 
 #define MAX_TRACKED_FDS 65536
@@ -120,6 +120,7 @@ static int (*next_dup)(int);
 static int (*next_dup2)(int, int);
 static int (*next_dup3)(int, int, int);
 static int (*next_fcntl)(int, int, ...);
+static int (*next_execv)(const char *, char *const []);
 
 static void resolve_symbols_once(void)
 {
@@ -141,12 +142,13 @@ static void resolve_symbols_once(void)
     RESOLVE(dup2);
     RESOLVE(dup3);
     RESOLVE(fcntl);
+    RESOLVE(execv);
 #undef RESOLVE
 
     if (!next_socket || !next_socketpair || !next_bind || !next_listen ||
         !next_connect || !next_accept || !next_setsockopt ||
         !next_getsockname || !next_sendmsg || !next_recvmsg || !next_close ||
-        !next_unlink || !next_dup || !next_dup2 || !next_fcntl)
+        !next_unlink || !next_dup || !next_dup2 || !next_fcntl || !next_execv)
     {
         static const char msg[] = "wine-tcp-preload: failed to resolve libc symbols\n";
         ssize_t ignored = write(STDERR_FILENO, msg, sizeof(msg) - 1);
@@ -582,6 +584,20 @@ static void cleanup_sidecar(const char *path)
     next_close(fd);
 }
 
+/* Preserve the flags Wine placed on the public descriptor while replacing
+ * its TCP open-file description with one endpoint of the native socketpair. */
+static int replace_with_unix_endpoint(int target_fd, int unix_fd)
+{
+    int descriptor_flags = next_fcntl(target_fd, F_GETFD);
+    int status_flags = next_fcntl(target_fd, F_GETFL);
+
+    if (descriptor_flags < 0 || status_flags < 0) return -1;
+    if (next_dup2(unix_fd, target_fd) < 0) return -1;
+    if (next_fcntl(target_fd, F_SETFL, status_flags) < 0) return -1;
+    if (next_fcntl(target_fd, F_SETFD, descriptor_flags) < 0) return -1;
+    return 0;
+}
+
 static int install_server_side_channel(int accepted_fd, const struct fd_state *listener)
 {
     struct hello_wire hello;
@@ -630,13 +646,18 @@ static int install_server_side_channel(int accepted_fd, const struct fd_state *l
         return -1;
     }
 
+    if (replace_with_unix_endpoint(accepted_fd, side_fd) < 0)
+    {
+        status = errno;
+        next_close(side_fd);
+        errno = status;
+        return -1;
+    }
+    next_close(side_fd);
     memset(&state, 0, sizeof(state));
-    state.kind = FD_CONNECTED;
-    state.side_fd = side_fd;
-    state.cookie = listener->cookie;
+    state.side_fd = -1;
     set_state(accepted_fd, &state);
-    set_tcp_nodelay(accepted_fd);
-    debug_log("accepted TCP master fd %d with Unix side fd %d\n", accepted_fd, side_fd);
+    debug_log("replaced accepted TCP fd %d with native Unix endpoint\n", accepted_fd);
     return 0;
 }
 
@@ -909,12 +930,18 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
     }
 
     next_close(pair[1]);
-    state.kind = FD_CONNECTED;
-    state.side_fd = pair[0];
-    state.cookie = be64toh(rendezvous.cookie_be);
-    state.pending_tokens = 0;
+    pair[1] = -1;
+    if (replace_with_unix_endpoint(fd, pair[0]) < 0)
+    {
+        saved_errno = errno;
+        goto error;
+    }
+    next_close(pair[0]);
+    pair[0] = -1;
+    memset(&state, 0, sizeof(state));
+    state.side_fd = -1;
     set_state(fd, &state);
-    debug_log("connected TCP master fd %d with Unix side fd %d\n", fd, pair[0]);
+    debug_log("replaced connected TCP fd %d with native Unix endpoint\n", fd);
     return 0;
 
 error:
@@ -1248,4 +1275,21 @@ int unlink(const char *path)
         cleanup_sidecar(path);
     errno = saved_errno;
     return ret;
+}
+
+/* A Windows child created by NtCreateUserProcess does not reconnect to the
+ * pathname master socket.  Wine has already made an anonymous AF_UNIX
+ * socketpair, sent one end to wineserver, and exported the other as
+ * WINESERVERSOCKET immediately before execv().  Remove the preload at that
+ * boundary; the initial loader has no WINESERVERSOCKET and keeps the bridge
+ * for its one pathname connection. */
+int execv(const char *path, char *const argv[])
+{
+    ensure_symbols();
+    if (getenv("WINESERVERSOCKET"))
+    {
+        debug_log("child socketpair exec: removing LD_PRELOAD before %s\n", path);
+        unsetenv("LD_PRELOAD");
+    }
+    return next_execv(path, argv);
 }

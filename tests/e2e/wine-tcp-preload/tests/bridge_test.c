@@ -101,7 +101,7 @@ static void wait_readable(int fd)
     if (ret != 1 || !(pfd.revents & POLLIN))
     {
         errno = ETIMEDOUT;
-        fail("poll readiness token");
+        fail("poll translated connection");
     }
 }
 
@@ -127,6 +127,19 @@ static void require_not_readable_now(int fd, const char *what)
     if (ret != 0)
     {
         errno = EPROTO;
+        fail(what);
+    }
+}
+
+static void require_unix_endpoint(int fd, const char *what)
+{
+    int domain = 0;
+    socklen_t size = sizeof(domain);
+
+    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &domain, &size) < 0 ||
+        size != sizeof(domain) || domain != AF_UNIX)
+    {
+        errno = EPROTOTYPE;
         fail(what);
     }
 }
@@ -298,6 +311,7 @@ int main(void)
         if (connect(connected, (struct sockaddr *)&address,
                     (socklen_t)(offsetof(struct sockaddr_un, sun_path) + strlen(socket_path) + 1)) < 0)
             fail("child connect");
+        require_unix_endpoint(connected, "child endpoint is not AF_UNIX");
         child_received = fcntl(connected, F_DUPFD_CLOEXEC, 64);
         if (child_received < 0) fail("child F_DUPFD_CLOEXEC");
         close(connected);
@@ -335,6 +349,7 @@ int main(void)
 
     accepted = accept(listener, NULL, NULL);
     if (accepted < 0) fail("accept");
+    require_unix_endpoint(accepted, "accepted endpoint is not AF_UNIX");
     close(peek_release[0]);
     accepted = exercise_dup_chain(accepted);
     flags = fcntl(accepted, F_GETFD);
