@@ -13,8 +13,9 @@ ubo-lpa-linux-results-*/
 ubo-lpa-wine-results-*/
 
 # local Wine bridge build products
-/tests/e2e/wine-tcp-preload/libwine-tcp-preload.so
+/tests/e2e/wine-tcp-preload/preload/
 /tests/e2e/wine-tcp-preload/tests/bridge_test
+/tests/e2e/wine-tcp-preload/tests/bridge_test32
 
 # editor / OS noise
 __pycache__/

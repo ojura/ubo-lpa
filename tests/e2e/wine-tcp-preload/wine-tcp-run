@@ -2,11 +2,9 @@
 set -euo pipefail
 
 shim_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-shim="$shim_dir/libwine-tcp-preload.so"
+shim="$shim_dir/preload/\$LIB/libwine-tcp-preload.so"
 
-if [[ ! -f "$shim" ]]; then
-    make -C "$shim_dir" libwine-tcp-preload.so
-fi
+make -C "$shim_dir" preload
 
 if [[ -n "${LD_PRELOAD:-}" ]]; then
     export LD_PRELOAD="$shim:$LD_PRELOAD"

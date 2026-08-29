@@ -46,6 +46,10 @@ work-directory copy. Build and run its integration test directly with:
 make -C tests/e2e/wine-tcp-preload check
 ```
 
+The build emits x86-64 and i386 libraries. The harness passes a single absolute
+preload path containing glibc's `$LIB` token, which selects the matching
+library for each Wine process.
+
 `WINE_TCP_SHIM_SOURCE_DIR` selects a different source directory for bridge
 development. The default is the source committed beside the harness. The Wine
 GitHub Actions job forces the bridge on so the browser run exercises it even

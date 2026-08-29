@@ -1471,11 +1471,17 @@ apt_with_retry() {
 if [[ ${SKIP_HOST_PACKAGES:-0} != 1 ]]; then
     note 'Installing host-side build, X11, archive, Python, and font dependencies.'
     apt_with_retry update
-    apt_with_retry install -y --no-install-recommends \
-        ca-certificates curl gnupg gcc make libc6-dev xz-utils unzip p7zip-full \
-        msitools \
-        python3 python3-pip xvfb xauth x11-utils xdotool imagemagick util-linux \
+    HOST_DEPENDENCIES=(
+        ca-certificates curl gnupg gcc make libc6-dev xz-utils unzip p7zip-full
+        msitools
+        python3 python3-pip xvfb xauth x11-utils xdotool imagemagick util-linux
         fonts-wine fonts-liberation file procps
+    )
+    if ((LINUX_MODE == 0)); then
+        HOST_DEPENDENCIES+=(gcc-multilib)
+    fi
+    apt_with_retry install -y --no-install-recommends \
+        "${HOST_DEPENDENCIES[@]}"
 else
     note 'SKIP_HOST_PACKAGES=1: checking the preinstalled host toolchain.'
     for executable in curl gcc make xz unzip 7z msiinfo python3 Xvfb xauth \
@@ -1607,8 +1613,10 @@ for required_shim_file in Makefile wine-tcp-preload.c wine-tcp-run tests/bridge_
 done
 mkdir -- "$SHIM_DIR"
 cp -a -- "$SHIM_SOURCE_DIR"/. "$SHIM_DIR"/
-make -C "$SHIM_DIR" libwine-tcp-preload.so
-SHIM=$SHIM_DIR/libwine-tcp-preload.so
+make -C "$SHIM_DIR" preload
+# glibc expands $LIB for each process, selecting the matching x86-64 or i386
+# preload library without exposing either loader to the wrong ELF class.
+SHIM=$SHIM_DIR/preload/\$LIB/libwine-tcp-preload.so
 
 AF_UNIX_OK=0
 if PROBE_DIR=$WORK_DIR python3 - <<'PY'
