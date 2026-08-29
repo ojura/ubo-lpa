@@ -1,0 +1,59 @@
+name: Linux Chrome
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-chrome-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Run static and diagnostics-contract checks
+        run: |
+          python3 -m py_compile ubo-lpa.py tests/e2e/probe.py
+          python3 tests/e2e/test_probe_diagnostics.py
+          bash -n tests/e2e/setup-ubo-wine-harness.sh
+
+      - name: Exercise native Linux Chrome
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+          UBO_RELEASE_VERSION: 1.74.0
+        run: |
+          test -x "$CHROME_BIN"
+          "$CHROME_BIN" --version
+          tests/e2e/setup-ubo-wine-harness.sh \
+            --linux \
+            --out "$RUNNER_TEMP/ubo-lpa-linux-results" \
+            "$GITHUB_WORKSPACE"
+
+      - name: Record runner environment
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/ubo-lpa-linux-results/logs"
+          {
+            uname -a
+            python3 --version
+            /usr/bin/google-chrome --version
+          } > "$RUNNER_TEMP/ubo-lpa-linux-results/logs/runner-environment.txt"
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-chrome-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ubo-lpa-linux-results/
+          if-no-files-found: warn
+          retention-days: 14

@@ -6,15 +6,15 @@ blocking intact.
 [![Linux Chrome](https://github.com/ojura/ubo-lpa/actions/workflows/linux.yml/badge.svg)](https://github.com/ojura/ubo-lpa/actions/workflows/linux.yml)
 [![Windows Chrome under Wine](https://github.com/ojura/ubo-lpa/actions/workflows/wine.yml/badge.svg)](https://github.com/ojura/ubo-lpa/actions/workflows/wine.yml)
 
-Chrome disables MV2 extensions, but it still supports legacy packaged apps
-(LPAs). This installer takes advantage of that to keep running the MV2 version of
-uBlock Origin. Adding the `app` entry to its manifest is enough to make Chrome
-treat it as an LPA.
+Chrome disables MV2 extensions but continues to support legacy packaged apps
+(LPAs). This installer uses that type distinction to run the MV2 version of
+uBlock Origin. Adding the `app` entry to its manifest causes Chrome to classify
+it as an LPA.
 
 The installer downloads uBlock Origin from its own releases, adds the `app` key,
-and patches the few places uBO assumes it is an extension. Chrome does not allow
-a toolbar button on an LPA, so it also builds a small companion extension to
-carry one, with uBO's panel inside its popup.
+and patches the code paths where uBO assumes it is an extension. Chrome does not
+allow an LPA to provide a toolbar button, so the installer also builds a small
+companion extension that provides the button and displays uBO's panel.
 
 [WRITEUP.md](WRITEUP.md) describes the technical details and lists all edits
 performed by the installer.
@@ -23,11 +23,11 @@ performed by the installer.
 
 On both platforms the patched uBO is a separate extension with its own ID, so it
 starts from uBlock Origin's defaults. An existing uBO's filter lists, custom
-rules and settings stay in that extension's storage and are not carried over.
+rules and settings remain in that extension's storage and are not carried over.
 Export them from the stock uBO's dashboard first and import them afterwards.
 
-On Windows that is the whole of it: the installer writes two directories and you
-load them yourself.
+On Windows, the installer writes the patched uBO and companion directories. Both
+must then be loaded manually from `chrome://extensions`.
 
 On Linux the installer edits each Chrome profile. Profiles are searched under
 `$XDG_CONFIG_HOME` (default `~/.config`) in `google-chrome`, `-beta`,
@@ -35,7 +35,7 @@ On Linux the installer edits each Chrome profile. Profiles are searched under
 also:
 
 - disables the Web Store uBO, so the two do not both filter
-- turns on `chrome://extensions` Developer mode, which the MV3 companion needs
+- turns on `chrome://extensions` Developer mode, which the MV3 companion requires
 - marks both extensions as allowed in incognito
 - grants the permissions declared in each manifest, without a prompt
 
@@ -43,10 +43,10 @@ also:
 
 ## Install
 
-`ubo-lpa.py` runs on both platforms and needs Python 3.9+. It generates an RSA
+`ubo-lpa.py` runs on both platforms and requires Python 3.9+. It generates an RSA
 key per extension, using the `cryptography` package or the `openssl` command
-when that package is absent, so Linux normally needs nothing further. On
-Windows, install it with `python -m pip install cryptography`.
+when that package is absent. Linux therefore requires no additional Python
+package. On Windows, install it with `python -m pip install cryptography`.
 
 Tested against Chrome 151.0.7922.108 and 152.0.7977.64 on Linux. The Windows
 installer lifecycle was exercised under Wine 11, which is a compatibility layer
@@ -59,24 +59,25 @@ python3 ubo-lpa.py install
 ```
 
 Close Chrome first; it rewrites `Preferences` on exit and will overwrite the
-injection. No root required. By default the extensions and their keys live in
-`~/.local/share/ublock-origin-lpa/`, which `--dir` changes; `timer` also writes
-a systemd unit under `~/.config/systemd/user/`, and install leaves a
-`Preferences.ubo-lpa.bak` in each profile until uninstall.
+injection. Root access is not required. By default, the extensions and their
+keys are stored in `~/.local/share/ublock-origin-lpa/`, which `--dir` changes;
+`timer` also writes a systemd unit under `~/.config/systemd/user/`, and install
+leaves a `Preferences.ubo-lpa.bak` in each profile until uninstall.
 
 | command | |
 |---|---|
 | `install` | download, patch, build companion, inject into every profile |
-| `update` | alias for `install`; a current, consistent install does nothing |
+| `update` | alias for `install`; makes no changes to a current, consistent installation |
 | `check` | verify required files, IDs, cross-references and patch sentinels |
-| `status` | what is installed where |
+| `status` | report installed versions, IDs and paths |
 | `uninstall` | remove both extensions and undo the profile changes below |
 | `timer` | systemd user timer that attempts an update daily |
 
-The timer runs `install` once a day. If Chrome is running it exits without
-installing and the next day's activation tries again, so running `install` by
-hand with Chrome closed is the reliable path. The unit calls this script where
-it currently sits, so moving the checkout requires re-running `timer`.
+The timer runs `install` once a day. If Chrome is running, it exits without
+installing and the next day's activation retries the installation. Running
+`install` manually with Chrome closed is therefore the recommended update
+method. The unit records the script's absolute path, so moving the checkout
+requires re-running `timer`.
 
 ### Windows
 
@@ -92,11 +93,11 @@ Then in Chrome:
 3. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\extension`
 4. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\companion`
 
-Chrome refuses scripted installs of off-store extensions on Windows. Enterprise
-policy can deploy them instead, but Google documents that route as needing a
-domain-joined or Entra-joined machine, or Chrome Enterprise Core enrolment, and
-it marks the browser as managed and makes both extensions non-removable.
-[WRITEUP.md](WRITEUP.md) covers it.
+Chrome does not permit scripted installation of off-store extensions on
+Windows. Enterprise policy can deploy them instead, but Google documents that
+route as requiring a domain-joined or Entra-joined machine, or Chrome Enterprise
+Core enrolment. It also marks the browser as managed and prevents users from
+removing either extension. See [WRITEUP.md](WRITEUP.md) for details.
 
 ## Layout
 
@@ -105,7 +106,7 @@ ubo-lpa.py          the implementation, both platforms
 assets/             the patch payloads as .js and .html files
 linux/ubo-lpa.sh    launcher
 windows/ubo-lpa.ps1 launcher
-WRITEUP.md          technical details, and what was tried on Windows
+WRITEUP.md          technical design and Windows installation analysis
 ```
 
 ## End-to-end tests
@@ -117,7 +118,7 @@ even when a run fails. Linux also checks uninstall; Wine restarts Windows
 Chrome to check persistence.
 
 The Windows job installs the current WineHQ development build and loads both
-directories through Chrome's real Win32 folder picker; it does not bypass the
+directories through Chrome's Win32 folder picker; it does not bypass the
 manual Windows installation route with `--load-extension`.
 
 See [tests/e2e/README.md](tests/e2e/README.md) for local commands and safety
@@ -125,17 +126,17 @@ notes.
 
 ## Caveats
 
-- **It can break at any Chrome release**, since it depends on LPAs being left out
-  of a check they could be added to at any time.
+- **Compatibility is limited to tested Chrome releases.** A future release may
+  extend MV2 enforcement to LPAs and make this approach inoperable.
 - **uBO appears under "Chrome Apps"**, not "Extensions".
 - **uBO is patched at install time.** The edits are listed in
   [WRITEUP.md](WRITEUP.md); `check` reports when one is missing.
 - **Keep the install directory.** It holds the private keys that fix the
-  extension IDs. Without them a rebuild mints new IDs, Chrome sees different
-  extensions, and uBO starts from defaults again. They are unencrypted private
-  keys, so keep any copy private.
-- **Not affiliated with uBlock Origin.** Reproduce bugs on a stock install before
-  taking them to its tracker.
+  extension IDs. Without them a rebuild generates new IDs, Chrome registers
+  different extensions, and uBO starts from defaults again. They are
+  unencrypted private keys, so keep any copy private.
+- **Not affiliated with uBlock Origin.** Reproduce issues on a stock install
+  before reporting them to the upstream project.
 
 ## Licence
 

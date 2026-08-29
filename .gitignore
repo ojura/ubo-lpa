@@ -1,0 +1,20 @@
+# staged extension trees and downloads
+/linux/extension/
+/linux/companion/
+/windows/stage/
+*.crx
+*.pem
+*.der
+*.key
+*.zip
+
+# local end-to-end harness output
+ubo-lpa-linux-results-*/
+ubo-lpa-wine-results-*/
+
+# editor / OS noise
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+*.swp
