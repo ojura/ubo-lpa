@@ -19,7 +19,7 @@ companion extension that provides the button and displays uBO's panel.
 [WRITEUP.md](WRITEUP.md) describes the technical details and lists all edits
 performed by the installer.
 
-## What installing changes
+## Installation effects
 
 On both platforms the patched uBO is a separate extension with its own ID, so it
 starts from uBlock Origin's defaults. An existing uBO's filter lists, custom
@@ -54,6 +54,14 @@ rather than Windows itself.
 
 ### Linux
 
+Clone or update a persistent checkout and install:
+
+```bash
+src="${XDG_DATA_HOME:-$HOME/.local/share}/ubo-lpa-source"; if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only; else git clone https://github.com/ojura/ubo-lpa.git "$src"; fi && python3 "$src/ubo-lpa.py" install
+```
+
+From an existing checkout:
+
 ```bash
 python3 ubo-lpa.py install
 ```
@@ -80,6 +88,14 @@ method. The unit records the script's absolute path, so moving the checkout
 requires re-running `timer`.
 
 ### Windows
+
+Clone or update a persistent checkout and stage the extensions:
+
+```powershell
+$src = Join-Path $env:LOCALAPPDATA 'uBOLPA-source'; if (Test-Path (Join-Path $src '.git')) { git -C $src pull --ff-only } else { git clone https://github.com/ojura/ubo-lpa.git $src }; if ($LASTEXITCODE -eq 0) { python -m pip install cryptography; if ($LASTEXITCODE -eq 0) { python (Join-Path $src 'ubo-lpa.py') install } }
+```
+
+From an existing checkout:
 
 ```powershell
 python -m pip install cryptography

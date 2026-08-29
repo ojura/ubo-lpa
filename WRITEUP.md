@@ -3,7 +3,7 @@
 This document describes the workaround, installer modifications, Windows
 installation constraints and troubleshooting procedures.
 
-## What the installer changes
+## Installer modifications
 
 Symbols below refer to uBlock Origin 1.74.0. Line numbers vary between
 releases, so they are omitted. If a patch anchor has moved, installation aborts
