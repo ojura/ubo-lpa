@@ -20,6 +20,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/random.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -38,16 +39,18 @@
  * This preload library translates only pathname AF_UNIX/SOCK_STREAM sockets
  * into loopback TCP for rendezvous.  During connect/accept, the client creates
  * a native socketpair and wineserver copies its far endpoint once with
- * pidfd_getfd().  Both sides then replace the TCP descriptor with their native
- * endpoint, so Wine's stream traffic, SCM_RIGHTS messages, and credentials
- * retain native AF_UNIX ordering and semantics.
+ * pidfd_getfd().  The client authorizes only that wineserver PID for the copy,
+ * then revokes the authorization.  Both sides replace the TCP descriptor with
+ * their native endpoint, so Wine's stream traffic, SCM_RIGHTS messages, and
+ * credentials retain native AF_UNIX ordering and semantics.
  */
 
 #define MAX_TRACKED_FDS 65536
 #define RENDEZVOUS_MAGIC UINT32_C(0x57545231) /* WTR1 */
+#define SERVER_HELLO_MAGIC UINT32_C(0x57545331) /* WTS1 */
 #define HELLO_MAGIC      UINT32_C(0x57544831) /* WTH1 */
 #define ACK_MAGIC        UINT32_C(0x57544131) /* WTA1 */
-#define PROTOCOL_VERSION 1
+#define PROTOCOL_VERSION 2
 #define TOKEN_BYTE       UINT8_C(0xa7)
 #define DEFAULT_IO_TIMEOUT_MS 1000
 #define SIDECAR_SUFFIX   ".winetcp"
@@ -86,6 +89,15 @@ struct hello_wire
     uint16_t reserved_be;
     uint32_t pid_be;
     uint32_t exported_fd_be;
+    uint64_t cookie_be;
+} __attribute__((packed));
+
+struct server_hello_wire
+{
+    uint32_t magic_be;
+    uint16_t version_be;
+    uint16_t reserved_be;
+    uint32_t pid_be;
     uint64_t cookie_be;
 } __attribute__((packed));
 
@@ -459,7 +471,11 @@ static int create_socket_marker(const char *path)
     socklen_t len;
     int saved_errno;
 
-    if (next_socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) < 0) return -1;
+    if (next_socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) < 0)
+    {
+        saved_errno = errno;
+        goto error;
+    }
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     if (strlen(path) >= sizeof(addr.sun_path))
@@ -598,8 +614,9 @@ static int replace_with_unix_endpoint(int target_fd, int unix_fd)
     return 0;
 }
 
-static int install_server_side_channel(int accepted_fd, const struct fd_state *listener)
+static int install_server_endpoint(int accepted_fd, const struct fd_state *listener)
 {
+    struct server_hello_wire server_hello;
     struct hello_wire hello;
     struct ack_wire ack;
     struct fd_state state;
@@ -607,7 +624,23 @@ static int install_server_side_channel(int accepted_fd, const struct fd_state *l
     int side_fd = -1;
     int status = 0;
 
-    if (recv_full(accepted_fd, &hello, sizeof(hello)) < 0) return -1;
+    memset(&server_hello, 0, sizeof(server_hello));
+    server_hello.magic_be = htonl(SERVER_HELLO_MAGIC);
+    server_hello.version_be = htons(PROTOCOL_VERSION);
+    server_hello.pid_be = htonl((uint32_t)getpid());
+    server_hello.cookie_be = htobe64(listener->cookie);
+    if (send_full(accepted_fd, &server_hello, sizeof(server_hello)) < 0)
+    {
+        debug_log("could not send server handshake on fd %d: %s\n",
+                  accepted_fd, strerror(errno));
+        return -1;
+    }
+    if (recv_full(accepted_fd, &hello, sizeof(hello)) < 0)
+    {
+        debug_log("could not receive client handshake on fd %d: %s\n",
+                  accepted_fd, strerror(errno));
+        return -1;
+    }
     if (ntohl(hello.magic_be) != HELLO_MAGIC ||
         ntohs(hello.version_be) != PROTOCOL_VERSION ||
         be64toh(hello.cookie_be) != listener->cookie ||
@@ -632,6 +665,10 @@ static int install_server_side_channel(int accepted_fd, const struct fd_state *l
         next_close(side_fd);
         side_fd = -1;
     }
+    if (status)
+        debug_log("could not copy client fd %u from pid %u: %s\n",
+                  (unsigned)ntohl(hello.exported_fd_be),
+                  (unsigned)ntohl(hello.pid_be), strerror(status));
 
     ack.magic_be = htonl(ACK_MAGIC);
     ack.status_be = htonl((uint32_t)status);
@@ -873,12 +910,14 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
     const struct sockaddr_un *unix_address = (const struct sockaddr_un *)address;
     struct rendezvous_wire rendezvous;
     struct sockaddr_in inet_address;
+    struct server_hello_wire server_hello;
     struct hello_wire hello;
     struct ack_wire ack;
     struct fd_state state;
     int pair[2] = {-1, -1};
     int saved_errno;
     int status;
+    bool ptracer_granted = false;
 
     ensure_symbols();
     state = get_state(fd);
@@ -898,7 +937,37 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
     if (next_connect(fd, (const struct sockaddr *)&inet_address, sizeof(inet_address)) < 0) return -1;
     set_tcp_nodelay(fd);
 
-    if (next_socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) < 0) return -1;
+    if (recv_full(fd, &server_hello, sizeof(server_hello)) < 0)
+    {
+        saved_errno = errno;
+        goto error;
+    }
+    if (ntohl(server_hello.magic_be) != SERVER_HELLO_MAGIC ||
+        ntohs(server_hello.version_be) != PROTOCOL_VERSION ||
+        server_hello.cookie_be != rendezvous.cookie_be ||
+        !(pid_t)ntohl(server_hello.pid_be))
+    {
+        saved_errno = EPROTO;
+        goto error;
+    }
+    if (prctl(PR_SET_PTRACER, (unsigned long)ntohl(server_hello.pid_be), 0, 0, 0) < 0)
+    {
+        saved_errno = errno;
+        if (saved_errno != EINVAL && saved_errno != ENOSYS)
+        {
+            debug_log("could not authorize wineserver pid %u: %s\n",
+                      (unsigned)ntohl(server_hello.pid_be), strerror(saved_errno));
+            goto error;
+        }
+        debug_log("kernel has no PR_SET_PTRACER policy; continuing without authorization\n");
+    }
+    else ptracer_granted = true;
+
+    if (next_socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) < 0)
+    {
+        saved_errno = errno;
+        goto error;
+    }
     if (state.passcred && next_setsockopt(pair[0], SOL_SOCKET, SO_PASSCRED,
                                          &state.passcred, sizeof(state.passcred)) < 0)
     {
@@ -929,6 +998,15 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
         goto error;
     }
 
+    if (ptracer_granted && prctl(PR_SET_PTRACER, 0, 0, 0, 0) < 0)
+    {
+        saved_errno = errno;
+        debug_log("could not revoke wineserver ptrace authorization: %s\n",
+                  strerror(saved_errno));
+        goto error;
+    }
+    ptracer_granted = false;
+
     next_close(pair[1]);
     pair[1] = -1;
     if (replace_with_unix_endpoint(fd, pair[0]) < 0)
@@ -945,6 +1023,14 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
     return 0;
 
 error:
+    if (ptracer_granted)
+    {
+        int error_before_revoke = saved_errno;
+        if (prctl(PR_SET_PTRACER, 0, 0, 0, 0) < 0)
+            debug_log("could not revoke wineserver ptrace authorization: %s\n",
+                      strerror(errno));
+        saved_errno = error_before_revoke;
+    }
     if (pair[0] >= 0) next_close(pair[0]);
     if (pair[1] >= 0) next_close(pair[1]);
     errno = saved_errno;
@@ -964,7 +1050,7 @@ int accept(int fd, struct sockaddr *address, socklen_t *address_len)
     if (state.kind != FD_LISTENER) return next_accept(fd, address, address_len);
     accepted = next_accept(fd, (struct sockaddr *)&ignored, &ignored_len);
     if (accepted < 0) return accepted;
-    if (install_server_side_channel(accepted, &state) < 0)
+        if (install_server_endpoint(accepted, &state) < 0)
     {
         saved_errno = errno;
         next_close(accepted);
@@ -996,7 +1082,7 @@ int accept4(int fd, struct sockaddr *address, socklen_t *address_len, int flags)
     else
         accepted = next_accept(fd, (struct sockaddr *)&ignored, &ignored_len);
     if (accepted < 0) return accepted;
-    if (install_server_side_channel(accepted, &state) < 0)
+        if (install_server_endpoint(accepted, &state) < 0)
     {
         saved_errno = errno;
         next_close(accepted);

@@ -194,6 +194,71 @@ static int exercise_dup_chain(int fd)
     return third;
 }
 
+/* Wine starts wineserver as a child of its first client.  On systems using
+ * Yama's default ptrace policy, that child may copy an FD from its parent only
+ * after the parent explicitly authorizes it. */
+static void exercise_child_server(const char *socket_path)
+{
+    struct sockaddr_un address;
+    int ready[2];
+    int listener;
+    int connected;
+    int accepted;
+    int status;
+    pid_t child;
+    char byte;
+    socklen_t address_len;
+
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    if (strlen(socket_path) >= sizeof(address.sun_path)) fail("child-server path");
+    strcpy(address.sun_path, socket_path);
+    address_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) +
+                              strlen(socket_path) + 1);
+    if (pipe(ready) < 0) fail("child-server ready pipe");
+    child = fork();
+    if (child < 0) fail("fork child server");
+    if (!child)
+    {
+        close(ready[0]);
+        listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (listener < 0) fail("child-server socket");
+        if (bind(listener, (struct sockaddr *)&address, address_len) < 0)
+            fail("child-server bind");
+        if (listen(listener, 1) < 0) fail("child-server listen");
+        if (write(ready[1], "R", 1) != 1) fail("child-server ready write");
+        close(ready[1]);
+        accepted = accept(listener, NULL, NULL);
+        if (accepted < 0) fail("child-server accept");
+        require_unix_endpoint(accepted, "child-server endpoint is not AF_UNIX");
+        if (read(accepted, &byte, 1) != 1 || byte != 'Q')
+            fail("child-server request");
+        if (write(accepted, "A", 1) != 1) fail("child-server response");
+        close(accepted);
+        close(listener);
+        _exit(0);
+    }
+
+    close(ready[1]);
+    if (read(ready[0], &byte, 1) != 1 || byte != 'R') fail("child-server ready read");
+    close(ready[0]);
+    connected = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (connected < 0) fail("parent-client socket");
+    if (connect(connected, (struct sockaddr *)&address, address_len) < 0)
+        fail("parent-client connect");
+    require_unix_endpoint(connected, "parent-client endpoint is not AF_UNIX");
+    if (write(connected, "Q", 1) != 1) fail("parent-client request");
+    if (read(connected, &byte, 1) != 1 || byte != 'A') fail("parent-client response");
+    close(connected);
+    if (waitpid(child, &status, 0) != child) fail("wait child server");
+    if (!WIFEXITED(status) || WEXITSTATUS(status))
+    {
+        errno = ECHILD;
+        fail("child-server status");
+    }
+    if (unlink(socket_path) < 0) fail("unlink child-server marker");
+}
+
 int main(void)
 {
     char directory[] = "bridge-test-XXXXXX";
@@ -399,6 +464,9 @@ int main(void)
     }
 
     if (unlink(socket_path) < 0) fail("unlink marker");
+    if (snprintf(socket_path, sizeof(socket_path), "%s/server-child", directory) >=
+        (int)sizeof(socket_path)) fail("child-server socket path");
+    exercise_child_server(socket_path);
     if (rmdir(directory) < 0) fail("rmdir");
     puts("bridge test: PASS");
     return 0;
