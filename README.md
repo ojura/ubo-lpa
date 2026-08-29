@@ -94,10 +94,8 @@ Then in Chrome:
 4. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\companion`
 
 Chrome does not permit scripted installation of off-store extensions on
-Windows. Enterprise policy can deploy them instead, but Google documents that
-route as requiring a domain-joined or Entra-joined machine, or Chrome Enterprise
-Core enrolment. It also marks the browser as managed and prevents users from
-removing either extension. See [WRITEUP.md](WRITEUP.md) for details.
+Windows. See [WRITEUP.md](WRITEUP.md) for analysis of the tested automated
+deployment routes.
 
 ## Layout
 
