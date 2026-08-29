@@ -36,3 +36,15 @@ The harness installs missing Debian/Ubuntu host packages by default. Set
 `SKIP_HOST_PACKAGES=1` only when all required tools are already present. See
 `--help` for cache inputs, Wine selection, low-memory mode and the AF_UNIX
 preload bridge controls.
+
+## Wine AF_UNIX bridge
+
+The Windows harness builds the bridge from `wine-tcp-preload/` in a disposable
+work-directory copy. Build and run its integration test directly with:
+
+```bash
+make -C tests/e2e/wine-tcp-preload check
+```
+
+`WINE_TCP_SHIM_SOURCE_DIR` selects a different source directory for bridge
+development. The default is the source committed beside the harness.

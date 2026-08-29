@@ -120,6 +120,7 @@ ubo-lpa.py          the implementation, both platforms
 assets/             the patch payloads as .js and .html files
 linux/ubo-lpa.sh    launcher
 windows/ubo-lpa.ps1 launcher
+tests/e2e/          browser harness, diagnostics tests and Wine bridge source
 WRITEUP.md          technical design and Windows installation analysis
 ```
 
