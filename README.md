@@ -6,10 +6,10 @@ blocking intact.
 [![Linux Chrome](https://github.com/ojura/ubo-lpa/actions/workflows/linux.yml/badge.svg)](https://github.com/ojura/ubo-lpa/actions/workflows/linux.yml)
 [![Windows Chrome under Wine](https://github.com/ojura/ubo-lpa/actions/workflows/wine.yml/badge.svg)](https://github.com/ojura/ubo-lpa/actions/workflows/wine.yml)
 
-Chrome disables MV2 extensions but continues to support legacy packaged apps
-(LPAs). This installer uses that type distinction to run the MV2 version of
-uBlock Origin. Adding the `app` entry to its manifest causes Chrome to classify
-it as an LPA.
+Chrome disables MV2 extensions, but it still supports legacy packaged apps
+(LPAs). This installer takes advantage of that to keep running the MV2 version of
+uBlock Origin. Adding the `app` entry to its manifest is enough to make Chrome
+treat it as an LPA.
 
 The installer downloads uBlock Origin from its own releases, adds the `app` key,
 and patches the code paths where uBO assumes it is an extension. Chrome does not
