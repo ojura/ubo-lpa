@@ -238,9 +238,37 @@ def install_with_wizard(msi: Path) -> None:
     check(clicker.prompts == 1,
           f"expected one remote debugging prompt during Setup, Chrome showed {clicker.prompts}")
     page(window, "wizard-7-finish")
-    screenshot(OUT / "desktop-after-install.png")
     click(window, "&Finish")
     check(process.wait(timeout=120) == 0, f"msiexec /i exited with {process.returncode}")
+    show_ubo_panel(OUT / "desktop-after-install.png")
+
+
+def show_ubo_panel(path: Path) -> None:
+    """
+    Screenshot uBO at work, for the release page: an ad-block test page in
+    the Chrome Setup loaded uBO into, with uBO's panel opened from its pinned
+    button. A button UI Automation cannot find leaves the screenshot without
+    the panel; it does not fail the test.
+    """
+    subprocess.Popen([chrome_exe(), "https://d3ward.github.io/toolz/adblock.html"])
+    time.sleep(15)
+    try:
+        from pywinauto import Desktop
+        for window in Desktop(backend="uia").windows():
+            if not window.element_info.class_name.startswith("Chrome_WidgetWin"):
+                continue
+            buttons = window.descendants(control_type="Button", title_re=r"uBlock Origin.*")
+            if buttons:
+                window.set_focus()
+                buttons[0].invoke()
+                time.sleep(5)
+                note("opened uBO's panel from its toolbar button")
+                break
+        else:
+            note("did not find the uBlock Origin button in Chrome's toolbar")
+    except Exception as exc:  # windows come and go while they are listed
+        note(f"opening uBO's panel: {type(exc).__name__}: {exc}")
+    screenshot(path)
 
 
 def maintenance(action: str, shot: str, untick_updates: bool = False) -> None:

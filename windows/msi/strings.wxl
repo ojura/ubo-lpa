@@ -30,7 +30,8 @@
   <String Id="UboOptionsPortable" Value="Without maintenance, Setup leaves nothing but the folder above: no updater, Start menu entry, daily update or entry in the list of installed apps. Running this installer, or a newer one, with the same folder updates uBlock Origin." />
 
   <String Id="UboMaintenanceTitle" Value="{\WixUI_Font_Title}Maintain ubo-lpa" />
-  <String Id="UboMaintenanceDescription" Value="uBlock Origin [UBOLPA_INSTALLED_VERSION] is installed in [UBOLPA_DIR]" />
+  <String Id="UboMaintenanceDescription" Value="uBlock Origin [UBOLPA_INSTALLED_VERSION] is installed." />
+  <String Id="UboMaintenanceFolder" Value="Folder: [UBOLPA_DIR]" />
   <String Id="UboMaintenanceUpdate" Value="&amp;Update now" />
   <String Id="UboMaintenanceUpdateText" Value="Install the newest uBlock Origin release if it is newer than this one, and load uBlock Origin into Chrome." />
   <String Id="UboMaintenanceChange" Value="&amp;Change settings" />
@@ -47,5 +48,5 @@
   <String Id="ProgressDlgTitleInstalling" Value="{\WixUI_Font_Title}Installing uBlock Origin for Chrome" />
   <String Id="ProgressDlgTextInstalling" Value="Building uBlock Origin and loading it into Chrome." />
   <String Id="ExitDialogTitle" Value="{\WixUI_Font_Bigger}uBlock Origin is ready" />
-  <String Id="ExitDialogDescription" Value="uBlock Origin is running in the chosen Chrome profiles. With maintenance, it updates daily, and the Start menu entry updates, changes or removes it. If Chrome's prompt was declined, Setup opened the steps for loading it by hand." />
+  <String Id="ExitDialogDescription" Value="uBlock Origin is running in Chrome. If Chrome's prompt was declined, Setup opened the steps for loading it by hand." />
 </WixLocalization>

@@ -147,7 +147,7 @@ namespace UboSetup
             }
             string folder = Folder(session["UBOLPA_DIR"]);
 
-            Progress(session, $"Building uBlock Origin in {folder}");
+            Progress(session, "Building uBlock Origin and its toolbar button");
             var install = new List<string> { "install", "--non-interactive", "--dir", folder };
             if (session["UBOLPA_SOURCE"] == "bundled")
                 install.AddRange(new[] { "--ubo-zip", BundledZip(payload) });
@@ -160,7 +160,7 @@ namespace UboSetup
 
             if (string.IsNullOrEmpty(session["UBOLPA_SKIP_LOAD"]))
             {
-                Progress(session, "Loading uBlock Origin into Chrome. Chrome asks whether to allow remote debugging: click Allow.");
+                Progress(session, "Loading into Chrome: click Allow in Chrome's prompt");
                 var load = new List<string> { "load", "--dir", folder };
                 if (!string.IsNullOrEmpty(session["UBOLPA_PROFILES"]))
                     load.AddRange(new[] { "--profiles", session["UBOLPA_PROFILES"] });

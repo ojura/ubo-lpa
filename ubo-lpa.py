@@ -2192,7 +2192,10 @@ def switch_off_remote_debugging(devtools: DevTools, user_data: Path) -> None:
     chrome://inspect, as the user would. The page shows the setting once
     Chrome has sent it its state, and a click before that is lost, so it waits
     for the box to show as ticked. Chrome then stops listening and closes this
-    connection, usually before it answers the call that asked for it.
+    connection, usually before it answers the call that asked for it, so a
+    later Target.closeTarget does not arrive either. The page closes itself
+    instead: a tab opened at an address has one history entry, and its own
+    script may close it then.
     """
     try:
         target, session = devtools.page("chrome://inspect/#remote-debugging")
@@ -2207,7 +2210,8 @@ def switch_off_remote_debugging(devtools: DevTools, user_data: Path) -> None:
             time.sleep(0.2)
         else:
             raise RuntimeError(f"the switch on chrome://inspect stayed {state}")
-        devtools.evaluate(session, 'document.getElementById("remote-debugging-enabled").click(); true')
+        devtools.evaluate(session, 'document.getElementById("remote-debugging-enabled").click(); '
+                                   'setTimeout(() => window.close(), 500); true')
         devtools.call("Target.closeTarget", {"targetId": target})
     except OSError:
         pass

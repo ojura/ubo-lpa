@@ -155,7 +155,7 @@
                     Message="Building uBlock Origin and its toolbar button" />
       <ProgressText Action="ScheduleUpdates" Message="Setting up the daily update" />
       <ProgressText Action="LoadIntoChrome"
-                    Message="Loading uBlock Origin into Chrome. Chrome asks whether to allow remote debugging: click Allow." />
+                    Message="Loading into Chrome: click Allow in Chrome's prompt" />
       <ProgressText Action="RemoveExtensions"
                     Message="Removing uBlock Origin's folder and the daily update" />
     </UI>

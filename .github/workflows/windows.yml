@@ -171,7 +171,7 @@ jobs:
           wizard-6-progress.png|setup-6-progress.png|Installing
           consent-1.png|setup-7-chrome-prompt.png|Chrome asks whether to allow remote debugging; Allow is the one click Setup needs
           wizard-7-finish.png|setup-8-finish.png|Finished
-          desktop-after-install.png|setup-9-chrome.png|uBlock Origin running in Chrome, with its button pinned
+          desktop-after-install.png|setup-9-chrome.png|uBlock Origin at work: its panel, from its pinned button, on an ad-block test page
           maintenance-change-1-maintenance.png|setup-10-maintenance.png|The Start menu entry opens maintenance: update now, change settings or remove
           portable-3-options.png|setup-11-portable.png|Without maintenance, Setup leaves nothing but the folder
           EOF

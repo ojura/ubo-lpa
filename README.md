@@ -188,7 +188,7 @@ for every build of the MSI.
 <tr>
 <td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-7-chrome-prompt.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-7-chrome-prompt.png" width="260" alt="Chrome's remote debugging prompt"></a><br><sub>The one click: Allow in Chrome's prompt</sub></td>
 <td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-8-finish.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-8-finish.png" width="260" alt="Finish page"></a><br><sub>Finished</sub></td>
-<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-9-chrome.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-9-chrome.png" width="260" alt="Chrome with the uBlock Origin button"></a><br><sub>uBlock Origin in Chrome, its button pinned</sub></td>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-9-chrome.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-9-chrome.png" width="260" alt="uBlock Origin's panel in Chrome, on an ad-block test page"></a><br><sub>uBO's panel, from its pinned button</sub></td>
 </tr>
 <tr>
 <td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-10-maintenance.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-10-maintenance.png" width="260" alt="Maintenance page"></a><br><sub>Maintenance, from the Start menu</sub></td>
