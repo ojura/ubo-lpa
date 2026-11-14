@@ -54,7 +54,7 @@ jobs:
           WINE_BIN: /opt/wine-devel/bin/wine
           WINE_TCP_SHIM: always
           WINE_TCP_PRELOAD_DEBUG: 1
-          UBO_RELEASE_VERSION: 1.74.0
+          UBO_RELEASE_VERSION: 1.76.2
         run: |
           tests/e2e/setup-ubo-wine-harness.sh \
             --out "$RUNNER_TEMP/ubo-lpa-wine-results" \

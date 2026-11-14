@@ -5,7 +5,7 @@ Windows install has to be completed manually, and how to troubleshoot problems.
 
 ## What the installer changes
 
-Symbols below refer to uBlock Origin 1.74.0. Line numbers vary between
+Symbols below refer to uBlock Origin 1.76.2. Line numbers vary between
 releases, so they are omitted. If the code a patch is anchored to has moved,
 the installer discards the staged build and leaves the previous installation
 unchanged.
@@ -149,10 +149,8 @@ count at the next refresh.
 
 A `runtime.onMessageExternal` listener responds to `{what:'uboBadge', tabId}`
 with `µb.requestStats.blockedCount` and `pageStore.counts.blocked.any`, and
-whether filtering is on for the page. uBO 1.76 replaced
-`pageStore.getNetFilteringSwitch()` with `pageStore.isTrusted()`, which is true
-when filtering is off; the bridge uses whichever the installed uBO has. The
-companion's service worker requests these values on `tabs.onActivated` and
+whether filtering is on for the page, which is `pageStore.isTrusted() === false`.
+The companion's service worker requests these values on `tabs.onActivated` and
 `onUpdated`, then sets its own badge for that tab.
 
 ### 7. Resize notifier: `js/popup-resize.js` plus a tag in `popup-fenix.html`

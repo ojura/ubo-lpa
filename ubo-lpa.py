@@ -48,7 +48,9 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 GITHUB_REPO = "gorhill/uBlock"
-KNOWN_GOOD = ["1.74.0", "1.73.0", "1.72.0", "1.71.0"]
+# Releases that all eight edits apply to. Edit 8 patches js/vapi-scripting.js,
+# which uBO has since 1.76.0.
+KNOWN_GOOD = ["1.76.2", "1.76.0"]
 RESIZE_MSG = "ubo-resize"
 STOCK_UBO_ID = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
 TIMER_NAME = "ubo-lpa-update"
@@ -398,6 +400,8 @@ def patch_scriptlet_injection(path: Path, companion_id: str) -> None:
     when uBO changes that text, the build stops instead of shipping a half
     edited file.
     """
+    if not path.exists():
+        die(f"{path.name} is missing; ubo-lpa needs uBO 1.76.0 or newer")
     source = path.read_text(encoding="utf-8")
     if "ubolpaUserScripts" in source:
         return

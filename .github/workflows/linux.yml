@@ -30,7 +30,6 @@ jobs:
       - name: Run the browser tests in Linux Chrome
         env:
           CHROME_BIN: /usr/bin/google-chrome
-          UBO_RELEASE_VERSION: 1.74.0
         run: |
           test -x "$CHROME_BIN"
           "$CHROME_BIN" --version

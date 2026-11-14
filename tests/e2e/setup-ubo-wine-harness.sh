@@ -48,7 +48,7 @@ Environment overrides:
   CHROME_MSI_SHA256=...                 require a specific MSI build
   PYTHON_EMBED_ZIP=/path/to/python.zip  use cached Python 3.12.10 embeddable x64
   PYTHON_EMBED_URL=https://...          override the official embeddable URL
-  UBO_RELEASE_VERSION=1.74.0            override the pinned uBO test release
+  UBO_RELEASE_VERSION=1.76.2            override the pinned uBO test release
   UBO_RELEASE_ARCHIVE=/path/to/ubo.zip  use a cached Chromium release archive
   UBO_WINE_LOWMEM=1                     low-memory Chrome flags for ~4 GB hosts
   UBO_CHROME_EXTRA_FLAGS='...'          extra Chrome flags for experiments
@@ -2172,7 +2172,7 @@ mapfile -t PROJECT_SCRIPTS < <(find "$PROJECT_TREE" -type f -name ubo-lpa.py -pr
 PROJECT_DIR=$(dirname -- "${PROJECT_SCRIPTS[0]}")
 [[ -d "$PROJECT_DIR/assets/companion" ]] || die 'project assets/companion directory is missing'
 
-UBO_RELEASE_VERSION=${UBO_RELEASE_VERSION:-1.74.0}
+UBO_RELEASE_VERSION=${UBO_RELEASE_VERSION:-1.76.2}
 if [[ -n "${UBO_RELEASE_ARCHIVE:-}" ]]; then
     UBO_RELEASE_ARCHIVE=$(realpath -- "$UBO_RELEASE_ARCHIVE")
 else

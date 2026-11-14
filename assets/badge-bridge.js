@@ -15,13 +15,8 @@ if ( browser.runtime.onMessageExternal ) {
                     ready: ub.readyToFilter === true,
                     globalBlocked: ub.requestStats.blockedCount,
                     pageBlocked: ps ? ps.counts.blocked.any : 0,
-                    // uBO 1.76 replaced getNetFilteringSwitch() with
-                    // isTrusted(), which is true when filtering is off.
-                    netFiltering: ps === null || ps === undefined
-                        ? true
-                        : typeof ps.isTrusted === 'function'
-                            ? ps.isTrusted() === false
-                            : ps.getNetFilteringSwitch(),
+                    // isTrusted() is true when filtering is off for the page.
+                    netFiltering: ps ? ps.isTrusted() === false : true,
                     showBadge: ub.userSettings
                         ? ub.userSettings.showIconBadge !== false
                         : true,
