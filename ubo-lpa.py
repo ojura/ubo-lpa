@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ubo-lpa: run uBlock Origin in Chrome 151 and 152 as a legacy packaged app.
+ubo-lpa: run uBlock Origin in Chrome 151 through 157 as a legacy packaged app.
 
 One implementation for Linux and Windows. The patching, companion build and
 consistency checks are identical on both. Only the delivery to Chrome differs,
@@ -19,11 +19,10 @@ and the two Installer subclasses at the bottom of this file implement it.
     ubo-lpa.py timer       run install daily: a systemd user timer on Linux, a
                            scheduled task on Windows; --off removes it, --keep
                            sets it up unless it was switched off
-    ubo-lpa.py load        Windows: load both extensions into Chrome, into the
-                           profile folders --profiles names
+    ubo-lpa.py load        Windows: load both extensions into Chrome over its
+                           DevTools connection, after a click on Allow in
+                           Chrome; --profiles names the profile folders
     ubo-lpa.py setup-info  print, as JSON, what the Windows setup wizard shows
-    ubo-lpa.py load        Windows: load both folders into Chrome over its
-                           DevTools connection, after a click on Allow in Chrome
 """
 
 from __future__ import annotations
@@ -54,7 +53,7 @@ from xml.sax.saxutils import escape
 
 GITHUB_REPO = "gorhill/uBlock"
 # Releases that all eight edits apply to. Edit 8 patches js/vapi-scripting.js,
-# which uBO has since 1.76.0.
+# which uBO has had since 1.76.0.
 KNOWN_GOOD = ["1.76.2", "1.76.0"]
 RESIZE_MSG = "ubo-resize"
 STOCK_UBO_ID = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
@@ -239,10 +238,10 @@ def resolve_latest_tag() -> tuple[str | None, bool]:
 
 def latest_release() -> str | None:
     """
-    The newest uBO release, or None. The release API answers 60 requests an
-    hour per address without a login, which machines behind one address can
-    use up; github.com's /releases/latest page then still redirects to the
-    newest release's tag.
+    The newest uBO release, or None. GitHub's release API answers 60
+    unauthenticated requests an hour per IP address, and machines that share
+    an address can use them up. The /releases/latest page on github.com still
+    redirects to the newest release's tag when that happens.
     """
     try:
         data = json.loads(
@@ -443,12 +442,12 @@ def patch_ubo(ext: Path, companion_id: str, embed_key: str | None) -> None:
 
 def patch_scriptlet_injection(path: Path, companion_id: str) -> None:
     """
-    Edit 8. Each replacement is anchored on text in uBO's vapi-scripting.js;
-    when uBO changes that text, the build stops instead of shipping a half
-    edited file.
+    Edit 8. Each replacement must match text in uBO's vapi-scripting.js
+    exactly once; when uBO changes that text, the build stops and does not
+    write a partly edited file.
     """
     if not path.exists():
-        die(f"{path.name} is missing; ubo-lpa needs uBO 1.76.0 or newer")
+        die(f"{path.name} is missing; uBO 1.76.0 or newer is required")
     source = path.read_text(encoding="utf-8")
     if "ubolpaUserScripts" in source:
         return
@@ -560,8 +559,9 @@ def build_companion(comp: Path, ubo_id: str, ubo_dir: Path, embed_key: str | Non
             "legacy packaged app so Chrome's Manifest V2 shutdown does not "
             "disable it."
         ),
-        # userScripts and host access let it register uBO's scriptlets so they
-        # run before the page's own scripts (edit 8). Only uBO may message it.
+        # userScripts and host access let it register uBO's main-world
+        # scriptlets so they run before the page's own scripts (edit 8). Only
+        # uBO may message it.
         "permissions": ["tabs", "userScripts"],
         "host_permissions": ["<all_urls>"],
         "externally_connectable": {"ids": [ubo_id]},
@@ -867,7 +867,10 @@ class Installer:
 
     # -- platform-specific delivery
     def deliver(self, ubo_id: str, comp_id: str, version: str, rebuilt: bool) -> int:
-        """Make Chrome load the built files. Returns the exit status."""
+        """
+        Add the built extensions to Chrome's profiles (Linux) or say how to
+        load them (Windows). Returns the exit status.
+        """
         raise NotImplementedError
 
     def remove(self) -> None:
@@ -885,9 +888,9 @@ class Installer:
     def apply_timer(self, mode: str) -> None:
         """
         "on" schedules the daily update and "off" removes it. "keep" schedules
-        it unless it was switched off before, which is what an upgrade without
-        a choice in the setup wizard needs. The choice is kept in the state
-        file.
+        it unless it was switched off before. The setup wizard passes "keep"
+        when its options page is skipped, as it is after the Update button on
+        the maintenance page. The choice is kept in the state file.
         """
         if mode == "keep" and self.state().get("autoupdate") is False:
             info("Daily updates stay off.")
@@ -960,10 +963,11 @@ class Installer:
         outdated = present and installed != tag
 
         if installed and version_tuple(tag) < version_tuple(installed):
-            # KNOWN_GOOD is fixed in this file, so when the API is unreachable
-            # the fallback can offer a version older than the installed one.
-            # That must not cause a downgrade. A broken install is still rebuilt
-            # from the version already recorded.
+            # KNOWN_GOOD is fixed in this file, so when latest_release() finds
+            # nothing, the fallback can offer a version older than the installed
+            # one, and --ubo-zip can name an older release. That must not cause
+            # a downgrade. A broken install is still rebuilt from the version
+            # already recorded.
             source = ("GitHub" if from_api
                       else f"{self.ubo_zip.name}" if self.ubo_zip is not None
                       else "The built-in release list")
@@ -1091,7 +1095,7 @@ def rename(src: Path, dest: Path) -> None:
     """
     Path.rename, retried for up to ten seconds on Windows. Windows refuses to
     rename a directory while a file in it is open, and a virus scanner checking
-    the new files or a Chrome read can hold one open for a moment.
+    the new files, or Chrome reading one, can hold a file open for a moment.
     """
     deadline = time.monotonic() + (10 if IS_WINDOWS else 0)
     while True:
@@ -1263,10 +1267,11 @@ class LinuxInstaller(Installer):
             stock["state"] = 0
             changed = True
 
-        # Chrome only gives the companion chrome.userScripts while its "Allow
-        # user scripts" toggle is on, and that toggle is this pref. Without it
-        # uBO injects scriptlets on its own as before, so the pref alone is
-        # never a reason to report the profile as waiting for Chrome to close.
+        # Chrome gives the companion chrome.userScripts only while its "Allow
+        # user scripts" toggle is on, and user_scripts_enabled is that toggle.
+        # With the toggle off, uBO injects the scriptlets itself, as an
+        # unpatched uBO does, so the pref alone is never a reason to report the
+        # profile as waiting for Chrome to close.
         companion = settings[comp_id]
         user_scripts_off = companion.get("user_scripts_enabled") is not True
         companion["user_scripts_enabled"] = True
@@ -1380,7 +1385,10 @@ class LinuxInstaller(Installer):
     UNIT_DIR = Path.home() / ".config/systemd/user"
 
     def _timer_target(self) -> Path | None:
-        """The install directory the timer units update, or None without units."""
+        """
+        The install directory the timer units update, or None if the service
+        unit does not exist.
+        """
         try:
             text = (self.UNIT_DIR / f"{TIMER_NAME}.service").read_text()
         except OSError:
@@ -1460,9 +1468,11 @@ class LinuxInstaller(Installer):
 
 class WindowsInstaller(Installer):
     """
-    Stages files only. Every automated route tested for an off-store extension
-    on Windows Chrome is ignored, leaves the extension disabled or needs
-    enterprise policy (see WRITEUP.md), so the final step is manual.
+    Stages the files. The load command then loads them into Chrome with Load
+    unpacked, over Chrome's DevTools connection, after one click on Allow.
+    Every other automated route tested for an off-store extension on Windows
+    Chrome is ignored, leaves the extension disabled or needs enterprise
+    policy (see WRITEUP.md).
     """
 
     def deliver(self, ubo_id: str, comp_id: str, version: str, rebuilt: bool) -> int:
@@ -1480,7 +1490,7 @@ class WindowsInstaller(Installer):
                  f"Chrome loads uBO {version} at its next start.")
             return 0
         print()
-        info("ubo-lpa.py load loads both into Chrome after a click on Allow in Chrome.")
+        info("To load both into Chrome, run ubo-lpa.py load and click Allow when Chrome asks.")
         warn("Or load them by hand:")
         print()
         print("  1. Open  chrome://extensions")
@@ -1577,8 +1587,9 @@ class WindowsInstaller(Installer):
     def load(self, user_data: Path | None = None, profiles: list[str] | None = None) -> int:
         """
         Load both folders into Chrome over its DevTools connection: into the
-        given profile folders, or without any into the profile Chrome opens.
-        When that fails, open a page with the manual steps and the reason.
+        given profile folders or, when none are given, into the profile Chrome
+        opens. When that fails, print the reason and open a page with the
+        manual steps.
         """
         try:
             return self._load(user_data, profiles)
@@ -1658,7 +1669,8 @@ class WindowsInstaller(Installer):
                         devtools, chrome, profile, user_data if explicit else None)
                 self._load_with(devtools, session, ubo_id, comp_id)
                 if profile is not None:
-                    # Its own window, which closes with its only tab.
+                    # The tab is alone in its window, so closing it closes
+                    # the window.
                     devtools.call("Target.closeTarget", {"targetId": target})
         finally:
             if switched_on:
@@ -1702,7 +1714,7 @@ class WindowsInstaller(Installer):
                 die(f"Chrome did not load {folder}")
             ok(f"{label} is loaded in Chrome")
         # userScriptsAccess is the companion's "Allow user scripts" toggle,
-        # which edit 8 needs.
+        # which has to be on for edit 8 to take effect.
         devtools.evaluate(session, "chrome.developerPrivate.updateExtensionConfiguration("
                                    f"{{extensionId: '{comp_id}', pinnedToToolbar: true, "
                                    "userScriptsAccess: true})")
@@ -1723,15 +1735,15 @@ class WindowsInstaller(Installer):
                 devtools.evaluate(session, f"chrome.management.setEnabled('{ext_id}', true)")
                 current = enabled(ext_id, 15)
             if current.get("state") != "ENABLED":
-                die(f"Chrome lists {ext_id} as {current.get('state')}, "
-                    f"for {', '.join(current.get('reasons') or ['no reason given'])}")
+                die(f"Chrome lists {ext_id} as {current.get('state')} "
+                    f"(disable reasons: {', '.join(current.get('reasons') or ['none'])})")
         ok("uBlock Origin is running in Chrome, with its button pinned to the toolbar.")
 
 
-# Daily at midnight local time with up to an hour's random delay, as the Linux
-# timer. StartWhenAvailable runs a missed update once the user is next logged
-# on. InteractiveToken runs the task as the user who created it, only while
-# they are logged on, so no password is stored.
+# Daily at midnight local time with up to an hour's random delay, like the
+# Linux timer. StartWhenAvailable runs a missed update once the user is next
+# logged on. InteractiveToken runs the task as the user who created it, and
+# only while they are logged on, so Task Scheduler does not store a password.
 TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -1807,7 +1819,8 @@ def chrome_user_data() -> Path:
 
 
 def expand_policy_path(value: str) -> str:
-    """The ${...} variables Chrome's path policies accept, and %VARIABLES%."""
+    """Expand the ${...} variables that Chrome's path policies accept, and
+    %VARIABLES%."""
     env = os.environ
     for name, replacement in {
         "${local_app_data}": env.get("LOCALAPPDATA", ""),
@@ -1870,8 +1883,8 @@ def profile_page(devtools: DevTools, chrome: str, profile: str,
     the profile Chrome started with, so this starts chrome.exe again with
     --profile-directory: the running Chrome takes that command over and opens
     a window in the profile. That window opens at the New Tab page whatever
-    address the command names, so its tab is the page that was not there
-    before.
+    address the command names, so its tab is found as the one page target
+    that was not there before, and then navigated to chrome://extensions.
     """
     def pages() -> list[dict]:
         return [t for t in devtools.call("Target.getTargets").get("targetInfos", [])
@@ -1896,8 +1909,8 @@ def profile_page(devtools: DevTools, chrome: str, profile: str,
 
 
 def chrome_info() -> dict:
-    """Which Chrome load uses: its program, version, and whether it is
-    installed for this user or for all users."""
+    """The Chrome that the load command uses: its program, version, user data
+    directory, and whether it is installed for this user or for all users."""
     exe = chrome_exe()
     if exe is None:
         return {"found": False, "user_data": str(chrome_user_data())}
@@ -1913,7 +1926,9 @@ def chrome_info() -> dict:
 def chrome_version(exe: str) -> str | None:
     if IS_WINDOWS:
         # chrome.exe sits beside a folder named after its version, which holds
-        # the rest of Chrome. After an update both stay until Chrome restarts.
+        # the rest of Chrome. After an update, the old and the new version's
+        # folders are both there until Chrome restarts, so the highest version
+        # is taken.
         try:
             names = [d.name for d in Path(exe).parent.iterdir() if d.is_dir()]
         except OSError:
@@ -1930,8 +1945,9 @@ def chrome_version(exe: str) -> str | None:
 
 
 def setup_info(installer: Installer) -> dict:
-    """What the Windows setup wizard shows: the Chrome load uses and its
-    profiles, the uBO releases it can install, and this install's state."""
+    """What the Windows setup wizard shows: the Chrome that the load command
+    uses and its profiles, the uBO releases it can install, and this install's
+    state."""
     chrome = chrome_info()
     state = installer.state() if installer.owns_root() else {}
     ubo_id, comp_id = state.get("ext_id"), state.get("comp_id")
@@ -2005,7 +2021,8 @@ def browser_running(user_data_dir: Path) -> bool:
 
 
 def entry_state(entry: dict | None, ext_dir: Path) -> str:
-    """How a profile's Preferences entry for one of the extensions stands."""
+    """The state of a profile's Preferences entry for one of the extensions:
+    "enabled", or what is wrong with it."""
     if entry is None:
         return "absent"
     if entry.get("location") != 4:
@@ -2022,11 +2039,12 @@ def entry_state(entry: dict | None, ext_dir: Path) -> str:
 # --- loading into Chrome (Windows) -----------------------------------------
 #
 # Chrome on Windows accepts an off-store extension only through Load unpacked
-# (WRITEUP.md, "Windows"). load performs those steps over Chrome's DevTools
-# connection, so the user's one step is to allow that connection in Chrome's
-# prompt. Extensions.loadUnpacked over DevTools would skip the folder picker,
-# but Chrome forgets extensions loaded that way at its next start, so load uses
-# the extensions page's own Load unpacked and fills in the picker it opens.
+# (WRITEUP.md, "Windows"). The load command performs the manual steps over
+# Chrome's DevTools connection, so the only step left to the user is a click on
+# Allow in Chrome's prompt. Extensions.loadUnpacked over DevTools would skip the
+# folder picker, but Chrome forgets extensions loaded that way at its next
+# start, so the command calls the extensions page's own Load unpacked and fills
+# in the folder picker it opens.
 
 
 class DevToolsRefused(Exception):
@@ -2034,7 +2052,7 @@ class DevToolsRefused(Exception):
 
 
 class DevTools:
-    """The parts of a DevTools WebSocket client that load needs."""
+    """The parts of a DevTools WebSocket client that the load command uses."""
 
     def __init__(self, port: int, path: str, consent_timeout: float) -> None:
         self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
@@ -2189,13 +2207,13 @@ def launch_chrome(chrome: str, flags: list[str]) -> None:
 def switch_off_remote_debugging(devtools: DevTools, user_data: Path) -> None:
     """
     Untick "Allow remote debugging for this browser instance" on
-    chrome://inspect, as the user would. The page shows the setting once
-    Chrome has sent it its state, and a click before that is lost, so it waits
-    for the box to show as ticked. Chrome then stops listening and closes this
-    connection, usually before it answers the call that asked for it, so a
-    later Target.closeTarget does not arrive either. The page closes itself
-    instead: a tab opened at an address has one history entry, and its own
-    script may close it then.
+    chrome://inspect, as the user would. The page shows the checkbox's state
+    only after Chrome has sent it, and a click before that is lost, so this
+    waits until the box shows as ticked. Chrome then stops listening and
+    closes this connection, usually before it answers the evaluate call that
+    clicked the box, so a Target.closeTarget sent after it does not arrive
+    either. The page closes itself instead: a tab opened at an address has
+    one history entry, so its own script may close it.
     """
     try:
         target, session = devtools.page("chrome://inspect/#remote-debugging")
@@ -2251,8 +2269,9 @@ GUIDE_HTML = """<!doctype html>
 </style></head>
 <body>
 <header><h1>Load uBlock Origin in Chrome</h1>
-<p>Setup could not load uBlock Origin into Chrome itself. These steps do it by hand, once;
-   the update log in the same folder says what went wrong.</p></header>
+<p>Setup could not load uBlock Origin into Chrome. Load it by hand with these steps; they are
+   needed only once. The update log (update.log, in the same folder as this page) says what
+   went wrong.</p></header>
 <main><ol>
   <li>Open the extensions page: paste this into Chrome's address bar.
     <div class="copy"><code>chrome://extensions</code><button>Copy</button></div></li>
@@ -2261,6 +2280,7 @@ GUIDE_HTML = """<!doctype html>
     <div class="copy"><code>__EXT__</code><button>Copy</button></div></li>
   <li>Click <b>Load unpacked</b> again and select the toolbar button's folder.
     <div class="copy"><code>__COMP__</code><button>Copy</button></div></li>
+  <li>Click <b>Details</b> on <b>uBlock Origin toolbar button</b> and turn on <b>Allow user scripts</b>.</li>
   <li>Pin <b>uBlock Origin toolbar button</b> from the puzzle-piece menu next to the address bar.</li>
 </ol></main>
 <script>
@@ -2324,9 +2344,9 @@ def devtools_port(user_data: Path) -> tuple[int, str] | None:
 
 
 def set_remote_debugging_pref(user_data: Path, enabled: bool) -> None:
-    """Chrome's "Allow remote debugging for this browser instance" setting, in
-    Local State. Only for a Chrome that is not running: a running one writes
-    its own copy back on exit."""
+    """Set Chrome's "Allow remote debugging for this browser instance" setting
+    in Local State. Call it only while Chrome is not running: a running Chrome
+    writes its own copy back when it exits."""
     path = user_data / "Local State"
     data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     user_data.mkdir(parents=True, exist_ok=True)
@@ -2448,7 +2468,8 @@ def main(argv: list[str] | None = None) -> int:
                             help="timer: remove the daily update")
     timer_mode.add_argument("--keep", action="store_true",
                             help="timer: schedule the daily update unless it was switched off")
-    # Tests point load at a Chrome started with its own user data directory.
+    # Tests use this to run load against a Chrome started with its own user
+    # data directory.
     parser.add_argument("--user-data-dir", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
@@ -2463,11 +2484,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if sys.stdout is None:
-        # Started by pythonw.exe, as the Windows scheduled task and the MSI
-        # do: there is no console, so append the output to a log in the
-        # install directory. uninstall deletes that directory, and Windows
-        # cannot delete a file this process holds open, so it logs to the
-        # temporary directory.
+        # The Windows scheduled task and the MSI start this script with
+        # pythonw.exe, which has no console, so the output is appended to a
+        # log in the install directory. uninstall deletes that directory, and
+        # Windows cannot delete a file this process holds open, so uninstall
+        # logs to the temporary directory.
         if args.command == "uninstall":
             log_path = Path(tempfile.gettempdir()) / "ubo-lpa-uninstall.log"
         else:

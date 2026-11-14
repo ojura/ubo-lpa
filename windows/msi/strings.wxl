@@ -16,7 +16,7 @@
 
   <String Id="UboChromeTitle" Value="{\WixUI_Font_Title}Google Chrome" />
   <String Id="UboChromeDescription" Value="Choose the Chrome profiles that get uBlock Origin." />
-  <String Id="UboChromeMissing" Value="Google Chrome was not found. Setup still builds uBlock Origin in its folder; once Chrome is installed, the Start menu entry's Change settings loads it." />
+  <String Id="UboChromeMissing" Value="Google Chrome was not found. Setup still builds uBlock Origin in its folder; once Chrome is installed, Change settings in the Start menu entry loads it." />
   <String Id="UboChromeNoProfiles" Value="Chrome has no profile yet. Setup starts Chrome, which creates its first profile, and loads uBlock Origin into it." />
   <String Id="UboChromeProfiles" Value="Profiles in [UBOLPA_USER_DATA]:" />
   <String Id="UboChromeMore" Value="and [UBOLPA_PROFILES_MORE] more, which Setup leaves out" />
@@ -40,7 +40,7 @@
   <String Id="UboMaintenanceRemoveText" Value="Remove ubo-lpa, uBlock Origin's folder and the daily update. Chrome lists both extensions until they are removed on chrome://extensions." />
 
   <String Id="VerifyReadyDlgInstallTitle" Value="{\WixUI_Font_Title}Ready to install" />
-  <String Id="VerifyReadyDlgInstallText" Value="Click Install to set up uBlock Origin. Setup then loads it into Chrome; Chrome asks once whether to allow remote debugging, and a click on Allow is all it needs. No administrator rights are needed." />
+  <String Id="VerifyReadyDlgInstallText" Value="Click Install to set up uBlock Origin. Setup then loads it into Chrome, which asks once whether to allow remote debugging: click Allow. No administrator rights are needed." />
   <String Id="VerifyReadyDlgChangeTitle" Value="{\WixUI_Font_Title}Ready to apply" />
   <String Id="VerifyReadyDlgChangeText" Value="Click Change to update uBlock Origin if a newer release is chosen, apply the daily update setting and load uBlock Origin into the chosen Chrome profiles." />
   <String Id="VerifyReadyDlgRemoveTitle" Value="{\WixUI_Font_Title}Ready to remove" />

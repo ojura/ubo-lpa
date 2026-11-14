@@ -2,9 +2,9 @@
 End-to-end test of the MSI on a fresh Windows runner with retail Chrome:
 
 - a first install through every page of the setup wizard, with a click on
-  Allow when Setup loads uBlock Origin into Chrome; the files, the Start menu,
-  the entry in the list of installed apps, the scheduled task, and Chrome's
-  record of both extensions;
+  Allow when Setup loads uBlock Origin into Chrome, then checks of the files,
+  the Start menu entries, the entry in the list of installed apps, the
+  scheduled task and Chrome's record of both extensions;
 - the maintenance page, opened from the Start menu: Change settings turns the
   daily update off, Update now keeps it off, and so does a silent upgrade,
   which also keeps the extension IDs;
@@ -14,7 +14,8 @@ End-to-end test of the MSI on a fresh Windows runner with retail Chrome:
 
 Usage: python tests/windows/msi_test.py FIRST.msi SECOND.msi
 (SECOND has the higher version.) Needs pywinauto and Pillow. Screenshots of
-every wizard page go to $UBO_OUT, with chrome.txt, the Chrome the wizard found.
+every wizard page go to $UBO_OUT, with chrome.txt, which names the Chrome the
+wizard found.
 """
 
 from __future__ import annotations
@@ -98,8 +99,8 @@ def chrome_exe() -> str:
 
 
 def seed_profile() -> None:
-    """Run Chrome once, as a user has before installing, so it has created
-    its Default profile and recorded it in Local State."""
+    """Run Chrome once, as a user would have before installing, so that it
+    creates its Default profile and records it in Local State."""
     subprocess.Popen([chrome_exe(), "--no-first-run", "--no-default-browser-check", "about:blank"])
     deadline = time.time() + 60
     while time.time() < deadline:
@@ -151,12 +152,14 @@ def page(window, shot: str, wait: float = 2) -> list[str]:
 
 def control(window, text, cls: str | None = "Button", timeout: int = 300):
     """
-    The visible, enabled control of this class (any class for None) whose
-    text is text (or matches it, a compiled pattern). Before the first page, and while a page's custom
-    action runs, Windows Installer shows the buttons disabled. WiX's Ready page
-    has two of some buttons, with and without the UAC shield, and shows one;
-    pywinauto's own lookup counts hidden controls too. A radio button is a
-    child of its group's control, so all descendants are searched.
+    Wait for the visible, enabled control of class cls (of any class when cls
+    is None) whose text equals text, or fully matches it when text is a
+    compiled pattern. Before the first page, and while a page's custom action
+    runs, Windows Installer shows the buttons disabled. WiX's Ready page has
+    two copies of some buttons, one with the UAC shield and one without, and
+    shows one of them; pywinauto's own lookup finds the hidden copy too. A
+    radio button is a child of its group's control, so all descendants are
+    searched.
     """
     deadline = time.time() + timeout
     while True:
@@ -186,8 +189,8 @@ def click(window, text, timeout: int = 300) -> None:
 
 def toggle(window, text) -> None:
     """Flip a checkbox, or select a radio button, and wait for its new state.
-    BM_CLICK is sent, not posted, and makes the control tell the dialog, which
-    sets the property."""
+    BM_CLICK is sent, not posted. It makes the control notify its parent with
+    BN_CLICKED, and Windows Installer then sets the control's property."""
     box = control(window, text)
     before = box.get_check_state()
     box.send_message(0x00F5)  # BM_CLICK
@@ -198,8 +201,9 @@ def toggle(window, text) -> None:
 
 
 def first_page(window, button: str) -> None:
-    """Wait for the first page: until then Windows Installer shows its
-    preparing page, here while UboProbe runs ubo-lpa.py setup-info."""
+    """Wait for the first page. Until it appears, Windows Installer shows its
+    preparing page, which in this MSI stays up while UboProbe runs ubo-lpa.py
+    setup-info."""
     control(window, button)
 
 
@@ -245,10 +249,10 @@ def install_with_wizard(msi: Path) -> None:
 
 def show_ubo_panel(path: Path) -> None:
     """
-    Screenshot uBO at work, for the release page: an ad-block test page in
-    the Chrome Setup loaded uBO into, with uBO's panel opened from its pinned
-    button. A button UI Automation cannot find leaves the screenshot without
-    the panel; it does not fail the test.
+    Take the screenshot of uBO for the release page: an ad-block test page in
+    the Chrome that Setup loaded uBO into, with uBO's panel opened from its
+    pinned button. When UI Automation cannot find the button, the screenshot
+    shows the page without the panel, and the test goes on.
     """
     subprocess.Popen([chrome_exe(), "https://adblock-tester.com/"])
     time.sleep(15)
@@ -257,7 +261,8 @@ def show_ubo_panel(path: Path) -> None:
         for window in Desktop(backend="uia").windows():
             if not window.element_info.class_name.startswith("Chrome_WidgetWin"):
                 continue
-            # Chrome names an action button after the extension's title.
+            # Chrome names an extension's toolbar button after its action
+            # title, followed by a line about site access.
             buttons = [b for b in window.descendants(control_type="Button")
                        if b.window_text().startswith("uBlock Origin")]
             if buttons:
@@ -276,7 +281,8 @@ def show_ubo_panel(path: Path) -> None:
 
 
 def maintenance(action: str, shot: str, untick_updates: bool = False) -> None:
-    """Open the maintenance page from the Start menu entry and run action on it."""
+    """Open the maintenance page from the Start menu entry, click the button
+    named action, and go on through the wizard to Finish."""
     os.startfile(str(MAINTENANCE_LNK))  # type: ignore[attr-defined]
     window = wizard()
     first_page(window, "&Update now")
@@ -329,8 +335,9 @@ def install_portable(msi: Path) -> str:
     note(f"the folder box is a {folder.class_name()}")
     # Windows Installer reads the box into the property when it loses focus.
     folder.set_focus()
-    # A RichEdit20W, which pywinauto wraps as an edit box; its
-    # set_window_text posts a pointer, set_edit_text sends it.
+    # A RichEdit20W, which pywinauto wraps as an edit box. Its set_window_text
+    # posts WM_SETTEXT, and PostMessage fails for a system message that passes
+    # a pointer; set_edit_text sends EM_REPLACESEL.
     folder.set_edit_text(str(PORTABLE))
     folder.type_keys("{TAB}")
     toggle(window, re.compile(r"Install &maintenance.*"))
@@ -361,7 +368,7 @@ def verify_install(version: str) -> None:
         check((MENU / name).exists(), f"missing Start menu entry {name}")
     entry = arp_entry()
     check(entry is not None and entry["DisplayVersion"] == version,
-          f"entry in the list of installed apps: {entry}")
+          f"the entry in the list of installed apps is missing or has another version: {entry}")
     note(f"installed {version}: files, Start menu and the entry in the list of installed apps are in place")
 
 
@@ -408,7 +415,8 @@ def run_task() -> None:
         if len(after) > len(before) and fields.get("Status") == "Ready":
             break
         time.sleep(3)
-    check(task_fields().get("Last Result") == "0", f"the scheduled run: {task_fields()}")
+    check(task_fields().get("Last Result") == "0",
+          f"the scheduled run did not end with Last Result 0: {task_fields()}")
     note("the scheduled update ran with Last Result 0")
 
 
@@ -455,10 +463,11 @@ def main() -> int:
                                  str(OUT / "uninstall.log")], timeout=900)
         check(result.returncode == 0, f"the uninstall exited with {result.returncode}")
         verify_removed()
-        note("uninstall removed the program, the extension folder, the menu, the entry and the task")
+        note("uninstall removed the program, the extension folder, the Start menu folder, "
+             "the entry in the list of installed apps and the scheduled task")
 
         bundled = install_portable(first)
-        check(arp_entry() is None, "the install without maintenance registered itself")
+        check(arp_entry() is None, "the install without maintenance added an entry to the list of installed apps")
         check(not PROGRAM.exists(), f"the install without maintenance installed {PROGRAM}")
         check(not MENU.exists(), "the install without maintenance created Start menu entries")
         check(not task_fields(), "the install without maintenance scheduled the update")

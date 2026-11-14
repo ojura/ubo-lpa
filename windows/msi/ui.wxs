@@ -7,7 +7,7 @@
 
   WiX's WixUI supplies Welcome, Ready, progress, Finish, the folder browser and
   the error dialogs. There is no license page: ubo-lpa and uBO are GPL-3.0,
-  which asks for no acceptance before installing.
+  which does not have to be accepted to receive or run them.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>

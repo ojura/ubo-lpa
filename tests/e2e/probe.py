@@ -392,8 +392,9 @@ class Fixtures(http.server.BaseHTTPRequestHandler):
                 ".then(()=>status.textContent='request completed')"
                 ".catch(()=>status.textContent='request failed');</script>")
         elif path == "/early":
-            # The first script in the document records whether uBO's scriptlet
-            # already ran, the way an anti-adblock loader in <head> would.
+            # The document's first script records whether uBO's scriptlet has
+            # already run. An anti-adblock loader in <head> runs as early, and a
+            # scriptlet that runs after it comes too late.
             self._send(
                 "<!doctype html><script>window.__early = typeof window.uboLpaEarly;"
                 "</script><meta charset=utf-8><title>scriptlet timing</title>"

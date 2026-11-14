@@ -1,6 +1,7 @@
 """
-Build the Windows MSI: the installer, Python with cryptography, the newest uBO
-release, the setup wizard's custom actions and its images, packaged by WiX.
+Build the Windows MSI with WiX. It contains ubo-lpa.py with its assets, Python
+with cryptography, the newest uBO release, and the setup wizard's custom
+actions and images.
 
 Usage, on Windows with the .NET SDK, WiX on PATH (dotnet tool install --global
 wix) and the WixToolset.UI and WixToolset.Util extensions added:
@@ -8,14 +9,15 @@ wix) and the WixToolset.UI and WixToolset.Util extensions added:
     python windows/msi/build.py --version 1.0.3 --out dist
 
 The embeddable Python is the official zip from python.org. pip downloads
-cryptography's Windows wheels, which are unpacked into the embedded
-Lib\\site-packages and compiled with unchecked-hash .pyc files, so Python never
-writes files the MSI does not know about.
+cryptography's Windows wheels, which are unpacked into the embedded Python's
+Lib\\site-packages and compiled to .pyc files with unchecked hashes. Python
+loads those without checking them against the sources, so it never writes
+files the MSI does not know about.
 
-The uBO release is the newest one when the MSI is built. Setup offers it as an
-alternative to downloading the newest release at install time. GITHUB_TOKEN, if
-set, authenticates the release lookup, which CI runners otherwise share a rate
-limit for.
+The bundled uBO release is the newest one at the time the MSI is built. Setup
+offers it as an alternative to downloading the newest release at install time.
+GITHUB_TOKEN, if set, authenticates the release lookup. Without a token, the
+API allows 60 requests an hour per IP address, and CI runners share addresses.
 """
 
 from __future__ import annotations

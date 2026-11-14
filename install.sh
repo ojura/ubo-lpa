@@ -50,7 +50,7 @@ main() {
 
     command -v python3 >/dev/null 2>&1 || fail "python3 is not installed"
     python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' \
-        || fail "ubo-lpa needs Python 3.9 or newer, and python3 is $(python3 -V 2>&1)"
+        || fail "Python 3.9 or newer is required, and python3 is $(python3 -V 2>&1)"
 
     if [ -d "$src/.git" ]; then
         say "Updating $src"
@@ -63,8 +63,8 @@ main() {
         fetch_archive "$repo/archive/refs/heads/main.tar.gz" "$src"
     fi
 
-    # Through a pipe, stdin is the rest of this script, so the installer
-    # gets /dev/null instead.
+    # Piped into sh, stdin is the pipe from curl or wget, not the terminal,
+    # so the installer gets /dev/null instead.
     status=0
     python3 "$src/ubo-lpa.py" install --non-interactive </dev/null || status=$?
     python3 "$src/ubo-lpa.py" timer </dev/null

@@ -7,7 +7,8 @@
 // document_start, before any page script. This hands each site's main-world
 // scriptlets to the companion. Once it confirms a site, navigations that start
 // later get only the isolated-world part from here, so the scriptlets run once.
-// Without the companion or its user scripts permission, nothing changes.
+// Without the companion, or while its "Allow user scripts" toggle is off, uBO
+// injects every part with executeScript, as an unpatched uBO does.
 const ubolpaUserScripts = (( ) => {
     const companionId = '__COMP_ID__';
     const navStarts = new Map();

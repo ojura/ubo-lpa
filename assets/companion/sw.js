@@ -34,11 +34,12 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   if ( info.status === 'complete' ) { refresh(tabId); }
 });
 
-// uBO hands over each site's main-world scriptlets, and chrome.userScripts
+// uBO sends each site's main-world scriptlets here, and chrome.userScripts
 // injects them at document_start, before the page's own scripts. uBO keeps
-// injecting them itself until a site is confirmed here, so a failure only
-// costs the early start. Operations run one at a time and in arrival order:
-// a reset that arrives after a registration has to remove it.
+// injecting them itself until a site is confirmed here, so when registering
+// fails, the scriptlets still run, only later. Operations run one at a time
+// and in arrival order: a reset that arrives after a registration has to
+// remove it.
 let userScriptQueue = Promise.resolve();
 const queueUserScripts = fn => {
   const run = userScriptQueue.then(fn);
@@ -50,7 +51,8 @@ const userScriptId = hostname => `site:${hostname}`;
 async function registerScriptlets(hostname, code) {
   const matches = [ `*://${hostname}/*` ];
   // Registering succeeds without host access, but Chrome then does not inject
-  // the script, so the site would lose its scriptlets.
+  // the script. uBO would still count the site as confirmed and stop injecting
+  // the main-world part, so the page would run without it.
   if ( await chrome.permissions.contains({ origins: matches }) !== true ) {
     throw new Error(`no host access to ${hostname}`);
   }

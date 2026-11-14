@@ -1,7 +1,7 @@
 # Technical design and implementation
 
 This document describes the workaround, the edits the installer makes, why the
-Windows install has to be completed manually, and how to troubleshoot problems.
+Windows install goes through Load unpacked, and how to troubleshoot problems.
 
 ## What the installer changes
 
@@ -28,21 +28,22 @@ an unpacked extension's manifest from disk at every start
 (`ShouldReloadExtensionManifest()` in `installed_loader.cc`), and it does not
 disable an unpacked extension whose new version asks for more permissions
 (`CheckPermissionsIncrease()` in `chrome_extension_registrar_delegate.cc`).
-Updates therefore run while Chrome is open, and on Windows the manual steps are
-needed only for the first install. Until Chrome restarts, the running uBO
-background page keeps the old code, while pages opened in the meantime, such as
-the popup and the dashboard, load the new files.
+Updates therefore run while Chrome is open, and on Windows Load unpacked, by
+hand or through `load`, is needed only for the first install. Until Chrome
+restarts, the running uBO background page keeps the old code, while pages
+opened in the meantime, such as the popup and the dashboard, load the new files.
 
 Windows refuses to rename a directory while a file in it is open, and a virus
-scanner checking the new files, or a Chrome read, can hold one open for a
-moment. The installer retries each rename for up to ten seconds. If a rename
+scanner checking the new files, or Chrome reading them, can hold one open for
+a moment. The installer retries each rename for up to ten seconds. If a rename
 still fails, it moves the previous directories back and exits with status 1,
 and the next run tries again.
 
 The installer edits a profile only when its entries need changing, and only
-while its browser is closed. It decides that from the `SingletonLock` symlink
-Chrome keeps in its user data directory while it runs, which points to
-`<hostname>-<pid>`.
+while its browser is closed. To tell whether the browser is running, it reads
+the `SingletonLock` symlink, which Chrome keeps in its user data directory
+while it runs and which points to `<hostname>-<pid>`, and checks whether that
+process still exists.
 
 The payloads live in `assets/` as files, with `__UBO_ID__`, `__COMP_ID__` and
 `__RESIZE_MSG__` substituted at install time.
@@ -176,22 +177,21 @@ The 10ms debounce coalesces uBO's mutation burst because `post()` forces layout
 twice per call. The panel reaches the same final height with longer delays, so a
 short delay avoids unnecessary latency.
 
-### 8. Scriptlets through the companion's user scripts: `js/vapi-scripting.js`
+### 8. Main-world scriptlets through the companion's user scripts: `js/vapi-scripting.js`
 
 uBO injects each site's scriptlets (`+js(...)` filters) with
 `tabs.executeScript` when `webNavigation.onCommitted` fires. On Chromium that
 arrives a few milliseconds after the page has started parsing, so an inline
-script early in `<head>` runs first, and anti-adblock loaders depend on that.
-Ad-Shield's bootstrap on index.hr saves the native `fetch`, `setAttribute` and
-`addEventListener` when it starts, so a scriptlet that arrives later cannot stop
-it, and `rmnt` empties the script only after it has run. Measured on index.hr
-with Chrome 157, uBO's scriptlets arrived 3 to 7 ms after the bootstrap on every
-load.
+script early in `<head>` runs before the scriptlets do, and can save a native
+function such as `fetch` before a scriptlet replaces it.
 
 The companion is an MV3 extension, so it can use `chrome.userScripts`, which
 injects registered code into the page's main world at `document_start`, before
-any page script. The edit inserts `assets/userscripts-bridge.js` into
-`vapi-scripting.js` and anchors six small changes on uBO's code:
+any page script. The edit hands uBO's main-world scriptlets to the companion,
+which registers them as user scripts, so they run before the page's own
+scripts; the isolated-world scriptlets still come from `executeScript`. It
+inserts `assets/userscripts-bridge.js` into `vapi-scripting.js` and anchors six
+small changes on uBO's code:
 
 - When uBO works out a site's scriptlets, it also sends the main-world part,
   wrapped in uBO's own trusted-site check, to the companion, which registers it
@@ -206,13 +206,14 @@ any page script. The edit inserts `assets/userscripts-bridge.js` into
   trusted-site list and a secret that changes at those points.
 
 The first navigation to a site after a reset still uses `executeScript` alone,
-which is uBO's normal behaviour. The companion needs the `userScripts`
-permission, host access to all sites, and its "Allow user scripts" toggle, which
-Chrome stores as `user_scripts_enabled` in its Preferences entry. On Linux the
-installer sets that pref the next time it edits the profile with Chrome closed;
-on Windows `load` turns it on, and by hand it is one more click on the
-companion's details page. When `chrome.userScripts` is unavailable, the
-companion answers that it cannot help and uBO keeps injecting on its own.
+which is uBO's normal behaviour. The companion's manifest declares the
+`userScripts` permission and host access to all sites, and its "Allow user
+scripts" toggle has to be on; Chrome stores the toggle as `user_scripts_enabled`
+in the companion's entry in Preferences. On Linux the installer sets that pref
+the next time it edits the profile with Chrome closed; on Windows `load` turns
+it on, and by hand it is one more click on the companion's details page. When
+`chrome.userScripts` is unavailable, the companion answers uBO's messages with
+`ok: false`, and uBO keeps injecting the scriptlets itself.
 
 Chrome applies a changed manifest of an unpacked extension only when it starts:
 a reload from `chrome://extensions` reloads the scripts but keeps the stored
@@ -324,8 +325,8 @@ authorization.
 
 ### Load unpacked over DevTools: `load`
 
-Chrome 136 and later accept a DevTools connection to the default profile when
-"Allow remote debugging for this browser instance" is on in
+Chrome 136 and later accept a DevTools connection to the default user data
+directory when "Allow remote debugging for this browser instance" is on in
 `chrome://inspect/#remote-debugging`, and then ask in an "Allow remote
 debugging?" prompt before each connection. The setting is
 `devtools.remote_debugging.user-enabled` in `Local State`, which Chrome reads
@@ -348,38 +349,39 @@ true})`, then `loadUnpacked()` for each folder, and
 `updateExtensionConfiguration({pinnedToToolbar: true})` for the button.
 `loadUnpacked()` opens Chrome's folder picker, a Win32 common dialog; `load`
 finds it among Chrome's windows, sets the folder in its file name box (control
-`0x480` in Wine's dialog, the `Edit` in the `ComboBoxEx32` `0x47C` in Windows')
-and sends `IDOK`. Then it waits until `getExtensionsInfo()` lists both as
-enabled: Chrome lists an extension as disabled, with the reason `reloading`,
-while it loads it again. Finally, if it switched remote debugging on, it turns
-it off from `chrome://inspect` as the page's checkbox does,
-`chrome.send('set-remote-debugging-enabled', [false])`, and Chrome closes the
-connection.
+`0x480` in Wine's dialog, and in Windows' dialog the `Edit` inside the
+`ComboBoxEx32` with ID `0x47C`) and sends `IDOK`. Then it waits until
+`getExtensionsInfo()` lists both as enabled: Chrome lists an extension as
+disabled, with the reason `reloading`, while it loads it again. Finally, if it
+switched remote debugging on, it opens `chrome://inspect/#remote-debugging`,
+waits until the page shows the checkbox ticked and clicks it, as a user would.
+Chrome then closes the connection, and the page closes itself.
 
 `load --profiles "Default|Profile 1"` loads into the named profile folders, on
-the same connection and so with one prompt. `Target.createTarget` opens tabs in
-a single profile, so for each one `load` starts `chrome.exe` again with
-`--profile-directory`. The running Chrome takes that command over and opens a
-window in the profile, always at the New Tab page: it ignores any address on a
-command line it takes over. The page target that was not there before is that
-window's tab, which `load` turns into `chrome://extensions` and works in as
-above, then closes. Profiles that already have both extensions are left out.
-Chrome keeps its profiles in the user's own folders whether it is installed for
-this user or for all users; only the `UserDataDir` policy moves them, and `load`
-reads that policy.
+the same connection and so with one prompt. `Target.createTarget` opens tabs
+only in the profile Chrome started with, so for each profile `load` starts
+`chrome.exe` again with `--profile-directory`. The new process hands its command
+line to the running Chrome, which opens a window in that profile, always at the
+New Tab page: it ignores any address on a command line handed over this way.
+`load` takes the page target that was not there before as that window's tab,
+navigates it to `chrome://extensions`, loads the extensions there as above, and
+closes it. Profiles that already have both extensions are left out.
+Chrome keeps its profiles in `%LOCALAPPDATA%\Google\Chrome\User Data`
+whether it is installed for this user or for all users; only the `UserDataDir`
+policy moves them, and `load` reads that policy.
 
 ### The MSI's setup wizard
 
-The MSI carries Python, `ubo-lpa.py` and the newest uBO release at build time,
-twice: as the files it installs, and as one zip in its `Binary` table. Before
-the first page, a custom action (`windows/msi/ca`) unpacks the zip into the
-temporary folder and runs `ubo-lpa.py setup-info`, which reports the Chrome
-`load` uses, its version and whether it is installed for this user or for all
-users, its profiles and whether each already has both extensions, the newest uBO
-release on GitHub and the bundled one. The wizard's pages show that: the
-release, newest or bundled, each with a link to its release notes; the profiles,
-as checkboxes; the folder, which defaults to `%LOCALAPPDATA%\uBOLPA`; and two
-options, maintenance and the daily update.
+The MSI contains Python, `ubo-lpa.py` and the uBO release that was newest when
+it was built, twice: as the files it installs, and as one zip in its `Binary`
+table. Before the first page, a custom action (`windows/msi/ca`) unpacks the zip
+into the temporary folder and runs `ubo-lpa.py setup-info`. `setup-info` reports
+the Chrome that `load` uses, with its version and whether it is installed for
+this user or for all users; its profiles, and whether each already has both
+extensions; and the newest uBO release on GitHub and the bundled one. The
+wizard's pages show that: the release, newest or bundled, each with a link to
+its release notes; the profiles, as checkboxes; the folder, which defaults to
+`%LOCALAPPDATA%\uBOLPA`; and two options, maintenance and the daily update.
 
 With maintenance, Windows Installer installs the program to
 `%LOCALAPPDATA%\Programs\ubo-lpa` and runs `install`, `timer` and `load` from it.
@@ -391,18 +393,19 @@ upgrade keeps it.
 
 Without maintenance, the wizard runs `install` and `load` from its own unpacked
 copy, while the progress page shows, and its `InstallUISequence` skips
-`ExecuteAction`. Windows Installer then installs and registers nothing, and the
-chosen folder is all that is left. Running the MSI again with the same folder
-updates it in place, with the same keys and so the same extension IDs.
+`ExecuteAction`. Windows Installer then does not install any files or register
+the product, so the chosen folder is all that is left. Running the MSI again
+with the same folder updates it in place, with the same keys and so the same
+extension IDs.
 
 DevTools has a direct `Extensions.loadUnpacked(path)`, and retail Chrome 157
-accepts it on a consent connection without `--enable-unsafe-extension-debugging`.
-Chrome loads extensions that way for the current session only: after a restart
-they are gone, as with `--load-extension`. A drop of the folder onto
-`chrome://extensions` simulated with `Input.dispatchDragEvent` reaches the page
-as a directory, but the browser answers `loadUnpacked({useDraggedPath: true})`
-with "No dragged path": it records the path only for a drag from the operating
-system.
+accepts it on a connection allowed in the prompt, without
+`--enable-unsafe-extension-debugging`. Chrome loads extensions that way for the
+current session only: after a restart they are gone, as with
+`--load-extension`. When `Input.dispatchDragEvent` simulates dropping the
+folder onto `chrome://extensions`, the page receives it as a directory, but the
+browser answers `loadUnpacked({useDraggedPath: true})` with "No dragged path":
+it records the path only for a drag from the operating system.
 
 `load` was tested with retail Windows Chrome 157 under Wine 11.22: from a fresh
 profile, from a running Chrome with and without remote debugging, across a

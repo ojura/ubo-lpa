@@ -1,7 +1,7 @@
 // The setup wizard's custom actions. They run in the wizard (the
-// InstallUISequence), as the user, and leave the work to ubo-lpa.py: the MSI
-// carries Python, ubo-lpa.py and the bundled uBO release as one zip in its
-// Binary table, which UboProbe unpacks into the temporary folder.
+// InstallUISequence), as the user, and leave the work to ubo-lpa.py. The MSI's
+// Binary table holds Python, ubo-lpa.py with its assets, and the bundled uBO
+// release as one zip, which UboProbe unpacks into the temporary folder.
 
 using System;
 using System.Collections.Generic;
@@ -17,7 +17,7 @@ namespace UboSetup
 {
     public static class CustomActions
     {
-        // The Chrome page has a checkbox for each of this many profiles.
+        // The number of profile checkboxes on the Chrome page.
         const int MaxProfiles = 8;
 
         // Unpack the payload, ask ubo-lpa.py setup-info about Chrome, its
@@ -108,15 +108,18 @@ namespace UboSetup
             string installed = Str(install, "version");
             if (installed != null)
                 session["UBOLPA_INSTALLED_VERSION"] = installed;
-            // In maintenance the checkbox starts as the scheduled task is now.
+            // When ubo-lpa is already installed, the daily update checkbox
+            // starts ticked if the scheduled task exists, and unticked if it
+            // does not.
             if (session.EvaluateCondition("Installed"))
                 session["AUTOUPDATE"] = Equals(install["autoupdate"], true) ? "1" : "";
         }
 
-        // The Chrome page's Next button: the ticked profiles, as load --profiles
-        // takes them. Without Chrome, or with every profile unticked, Setup does
-        // not load. A Chrome that has never run has no profile yet; load then
-        // starts it, and it creates its first one.
+        // Run by the Chrome page's Next button. Joins the ticked profiles with
+        // "|", as load --profiles takes them. Without Chrome, or with every
+        // profile unticked, Setup skips load; after a UboProbe failure it runs
+        // load anyway. A Chrome that has never run has no profile yet; load
+        // then starts Chrome, which creates its first profile.
         [CustomAction]
         public static ActionResult UboSelectProfiles(Session session)
         {
@@ -164,8 +167,9 @@ namespace UboSetup
                 var load = new List<string> { "load", "--dir", folder };
                 if (!string.IsNullOrEmpty(session["UBOLPA_PROFILES"]))
                     load.AddRange(new[] { "--profiles", session["UBOLPA_PROFILES"] });
-                // A refused prompt does not fail Setup: load then opens the
-                // steps for loading by hand, as in a maintained install.
+                // load's exit code is ignored, so a refused prompt does not
+                // fail Setup: load then opens the steps for loading by hand,
+                // as it does in an install with maintenance.
                 RunPython(session, payload, load, out _);
             }
             return ActionResult.Success;

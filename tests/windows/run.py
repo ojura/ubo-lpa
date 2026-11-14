@@ -1,8 +1,8 @@
 """
-Test the Windows installer on a real Windows machine (the GitHub Actions
-Windows runner), with the retail Chrome installed there: install, the
-scheduled task that updates it, load with a click on Allow in Chrome's prompt,
-an update while Chrome has both extensions loaded, and uninstall.
+Test ubo-lpa.py on a real Windows machine (the GitHub Actions Windows runner),
+with the retail Chrome installed there: install, the scheduled task that
+updates the install, load with a click on Allow in Chrome's prompt, an update
+while Chrome has both extensions loaded, and uninstall.
 
 UI Automation clicks Allow, as a user would (tests/windows/uia.py). Chrome
 runs on its default user data directory, which a first run of Chrome on the
@@ -92,8 +92,8 @@ def close_chrome() -> None:
 
 
 def first_run_done() -> None:
-    """Chrome shows its first-run pages unless this marker exists; a user's
-    Chrome has it."""
+    """Create the First Run marker, which a user's Chrome has; without it,
+    Chrome shows its first-run pages."""
     USER_DATA.mkdir(parents=True, exist_ok=True)
     (USER_DATA / "First Run").touch()
 
@@ -139,7 +139,7 @@ def test_timer(task: str) -> None:
     if fields.get("Last Result") != "0":
         raise Failure(f"the scheduled run ended with Last Result {fields.get('Last Result')}")
     if "No changes made." not in new:
-        raise Failure("the scheduled run did not log a completed install")
+        raise Failure('the scheduled run did not log "No changes made."')
 
 
 def test_load(module, ubo_id: str, comp_id: str) -> None:

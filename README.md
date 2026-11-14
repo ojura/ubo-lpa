@@ -29,11 +29,12 @@ irm https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.ps1 | iex
   <sub>The Windows setup on a current Chrome, in which Manifest V2 extensions no longer run</sub>
 </p>
 
-Both set up a daily update; the Windows setup can also leave it out, or install
-without maintenance, leaving nothing but the uBlock Origin folder. The patched uBO starts with uBlock Origin's default
-settings; to keep the current ones, back them up from the stock uBO's dashboard
-first and restore them afterwards. [Installation details](#installation-details)
-describes each route.
+Both set up a daily update. The Windows setup can also leave the daily update
+out, or install without maintenance and leave nothing but the uBlock Origin
+folder. The patched uBO starts with uBlock Origin's default settings; to keep
+the current ones, back them up from the stock uBO's dashboard first and restore
+them afterwards. [Installation details](#installation-details) describes each
+route.
 
 ## How it works
 
@@ -72,18 +73,19 @@ it also:
   the companion extension
 - marks both extensions as allowed in incognito
 - grants the permissions declared in each manifest, without a prompt
-- turns on the companion's **Allow user scripts**, which lets uBO's scriptlets
-  run before a page's own scripts (edit 8 in [WRITEUP.md](WRITEUP.md))
+- turns on the companion's **Allow user scripts**, which lets uBO's main-world
+  scriptlets run before a page's own scripts (edit 8 in
+  [WRITEUP.md](WRITEUP.md))
 
 `uninstall` reverses the first two and removes both extensions.
 
 ## Installation details
 
-From a checkout, `ubo-lpa.py` runs on both platforms and requires Python 3.9+.
-It generates an RSA key per extension, using the `cryptography` package or the
-`openssl` command when that package is absent. Linux systems normally have
-`openssl`, so pip is not needed there. On Windows, install the package with
-`python -m pip install cryptography`.
+From a checkout, `ubo-lpa.py` runs on both platforms; Python 3.9 or newer is
+required. It generates an RSA key per extension, using the `cryptography`
+package or the `openssl` command when that package is absent. Linux systems
+normally have `openssl`, so pip is not needed there. On Windows, install the
+package with `python -m pip install cryptography`.
 
 CI tests every push with the current stable Chrome on Linux, on GitHub's
 Windows runners, and as Windows Chrome under Wine 11; see
@@ -106,16 +108,17 @@ python3 ubo-lpa.py timer
 
 Close Chrome for the first install. Chrome keeps each profile's `Preferences` in
 memory and writes it back on exit, so the installer only edits a profile while
-its browser is closed. With Chrome open, `install` builds the files, leaves the
-profiles alone and exits with status 1. Updates keep the same paths and IDs and
-only replace the files, so they run while Chrome is open, and Chrome loads the
-new version at its next start. Adding the extensions to a new profile and
-`uninstall` need Chrome closed again. Root access is not required. The
-extensions and their keys are stored in `~/.local/share/ublock-origin-lpa/`
-(under `$XDG_DATA_HOME` if set), or in the directory given with `--dir`. `timer`
-also writes a systemd service and timer to `~/.config/systemd/user/`. In each
-profile, `install` keeps a copy of the original `Preferences` as
-`Preferences.ubo-lpa.bak` until `uninstall` deletes it.
+its browser is closed. If Chrome is open at the first install, `install` builds
+the files, leaves the profiles alone and exits with status 1. Updates keep the
+same paths and IDs and only replace the files, so they run while Chrome is open,
+and Chrome loads the new version at its next start. Adding the extensions to a
+new profile and `uninstall` need Chrome closed again. Root access is not
+required. The extensions and their keys are stored in
+`~/.local/share/ublock-origin-lpa/` (under `$XDG_DATA_HOME` if set), or in the
+directory given with `--dir`. `timer` also writes a systemd service and timer to
+`~/.config/systemd/user/`. In each profile, `install` keeps a copy of the
+original `Preferences` as `Preferences.ubo-lpa.bak` until `uninstall` deletes
+it.
 
 | command | |
 |---|---|
@@ -137,29 +140,30 @@ so moving the checkout requires re-running `timer`.
 ### Windows
 
 The [latest MSI](https://github.com/ojura/ubo-lpa/releases/latest/download/ubo-lpa.msi)
-is the one the [Windows workflow](https://github.com/ojura/ubo-lpa/actions/workflows/windows.yml)
-built and tested from the newest commit on `main`, published as the
+comes from the newest commit on `main` that passed the
+[Windows workflow](https://github.com/ojura/ubo-lpa/actions/workflows/windows.yml),
+which builds and tests the MSI and publishes it as the
 [`latest` release](https://github.com/ojura/ubo-lpa/releases/tag/latest).
 [install.ps1](install.ps1) downloads it and starts its setup wizard. The MSI is
 not code-signed, so Windows SmartScreen warns about it. The release page shows
 each step of the setup, from screenshots the msi job takes on a Windows runner.
 
 The MSI installs everything for the current user, without administrator rights,
-and brings its own Python and the newest uBO release at the time it was built.
-Its wizard asks:
+and contains its own Python and the uBO release that was newest when it was
+built. Its wizard asks:
 
 - which uBO release to install: the newest one, downloaded from GitHub, or the
   bundled one, each with a link to its release notes;
-- which Chrome profiles get it. The page shows the Chrome it found, its version
-  and whether it is installed for this user or for all users;
+- which Chrome profiles get it, on a page that shows the Chrome it found, its
+  version and whether it is installed for this user or for all users;
 - which folder to keep it in, `%LOCALAPPDATA%\uBOLPA` by default;
 - whether to install maintenance and whether to update daily, both on by
   default.
 
 Setup then patches uBO into the folder and loads both extensions into the chosen
-profiles. Chrome asks once whether to allow remote debugging; a click on
-**Allow** is the only step Setup leaves to the user. If Chrome is running at
-that moment, Setup asks to restart it first, and Chrome reopens its tabs.
+profiles. Chrome asks once whether to allow remote debugging. With Chrome
+closed, a click on **Allow** is the only step Setup leaves to the user; with
+Chrome running, Setup first asks to restart it, and Chrome reopens its tabs.
 
 Maintenance is the updater in `%LOCALAPPDATA%\Programs\ubo-lpa`, the daily
 update, an entry in the list of installed apps and a Start menu entry, "Update,
@@ -171,8 +175,8 @@ Running the MSI again with the same folder updates it, and keeps uBO's settings.
 
 #### Setup on Windows
 
-These screenshots come from the msi job's test on a Windows runner, taken anew
-for every build of the MSI.
+These screenshots come from the msi job's test on a Windows runner, and are
+replaced whenever a new MSI is published.
 
 <table>
 <tr>
@@ -186,7 +190,7 @@ for every build of the MSI.
 <td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-6-progress.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-6-progress.png" width="260" alt="Progress page"></a><br><sub>Installing</sub></td>
 </tr>
 <tr>
-<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-7-chrome-prompt.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-7-chrome-prompt.png" width="260" alt="Chrome's remote debugging prompt"></a><br><sub>The one click: Allow in Chrome's prompt</sub></td>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-7-chrome-prompt.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-7-chrome-prompt.png" width="260" alt="Chrome's remote debugging prompt"></a><br><sub>Allow in Chrome's remote debugging prompt</sub></td>
 <td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-8-finish.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-8-finish.png" width="260" alt="Finish page"></a><br><sub>Finished</sub></td>
 <td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-9-chrome.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-9-chrome.png" width="260" alt="uBlock Origin's panel in Chrome, on an ad-block test page"></a><br><sub>uBO's panel, from its pinned button</sub></td>
 </tr>
@@ -206,11 +210,11 @@ python ubo-lpa.py load
 python ubo-lpa.py timer
 ```
 
-`load` does what Load unpacked does by hand, over Chrome's DevTools connection:
-it turns on Developer mode, loads both folders through the extensions page,
-turns on the button's **Allow user scripts** and pins the button. It switches
-remote debugging on only for this, and off again afterwards. Loading by hand
-works as well, once:
+`load` performs the steps below over Chrome's DevTools connection: it turns on
+Developer mode, loads both folders through the extensions page, turns on the
+companion's **Allow user scripts** and pins its button. If remote debugging was
+off, it turns it on for this and off again afterwards. Loading by hand works as
+well, and is needed only once:
 
 1. Open `chrome://extensions`
 2. Turn on **Developer mode**
@@ -219,7 +223,7 @@ works as well, once:
 4. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\companion`, or `companion`
    in that folder
 5. Open **Details** of "uBlock Origin toolbar button" and turn on **Allow user
-   scripts**, so uBO's scriptlets run before the page's own scripts
+   scripts**, so uBO's main-world scriptlets run before the page's own scripts
 
 Updates replace both folders in place, Chrome keeps the extensions loaded, and
 it loads the new version at its next start. `timer` registers a scheduled task,
@@ -230,10 +234,11 @@ PC was off is caught up at the next logon. Each run appends its output to
 `--dir`, the task name ends in a hash of the directory, so each install
 directory has its own task.
 
-Of the automated routes tested on Windows, only enterprise policy installs an
-off-store extension that Chrome leaves enabled, and only Load unpacked does so
-without managing the browser. [WRITEUP.md](WRITEUP.md#windows) compares all the
-routes that were tested, and describes how `load` drives Load unpacked.
+Of the routes tested on Windows, only enterprise policy and Load unpacked
+install an off-store extension that Chrome keeps enabled across restarts, and
+only Load unpacked does so without putting the browser under enterprise
+management. [WRITEUP.md](WRITEUP.md#windows) compares all the routes that were
+tested, and describes how `load` drives Load unpacked.
 
 ## Layout
 
@@ -249,7 +254,7 @@ windows/msi/        the MSI: WiX sources, setup art, the wizard's custom
                     actions and the build script
 tests/windows/      Windows runner tests of load, the scheduled task, updates
                     and the MSI
-WRITEUP.md          technical design, and why Windows needs a manual install
+WRITEUP.md          technical design, and why Windows needs Load unpacked
 ```
 
 ## End-to-end tests
@@ -270,9 +275,12 @@ Chrome installed there. [tests/windows/run.py](tests/windows/run.py) installs,
 runs the scheduled task through Task Scheduler, runs `load` while UI Automation
 clicks Allow in Chrome's prompt, checks what Chrome saved about both
 extensions, updates the install while Chrome runs with them loaded, and
-uninstalls. [tests/windows/msi_test.py](tests/windows/msi_test.py) builds the
-MSI, installs it through the wizard with a screenshot of every page, upgrades
-it and uninstalls it.
+uninstalls. The msi job builds the MSI with
+[windows/msi/build.py](windows/msi/build.py), and
+[tests/windows/msi_test.py](tests/windows/msi_test.py) installs it through the
+wizard with a screenshot of every page, changes its settings and updates it
+from the maintenance page, upgrades it, uninstalls it, and installs it once
+more without maintenance.
 
 See [tests/e2e/README.md](tests/e2e/README.md) for local commands and safety
 notes.

@@ -622,8 +622,9 @@ class Fixtures(http.server.BaseHTTPRequestHandler):
                 ".then(()=>status.textContent='request completed')"
                 ".catch(()=>status.textContent='request failed');</script>")
         elif path == "/early":
-            # The first script in the document records whether uBO's scriptlet
-            # already ran, the way an anti-adblock loader in <head> would.
+            # The document's first script records whether uBO's scriptlet has
+            # already run. An anti-adblock loader in <head> runs as early, and a
+            # scriptlet that runs after it comes too late.
             self._send(
                 "<!doctype html><script>window.__early = typeof window.uboLpaEarly;"
                 "</script><meta charset=utf-8><title>scriptlet timing</title>"
@@ -1909,9 +1910,9 @@ if ((LINUX_MODE)); then
     # so it runs against a temporary profile tree. The installer finds profiles
     # under $XDG_CONFIG_HOME, which points into the work directory, so its
     # profile edits stay there. The installer's lock file is still created in
-    # $XDG_RUNTIME_DIR. The uninstall step reads any ubo-lpa-update timer unit
-    # in ~/.config/systemd/user, and leaves it in place because it updates a
-    # different install directory.
+    # $XDG_RUNTIME_DIR. The uninstall step reads the ubo-lpa-update service
+    # unit in ~/.config/systemd/user, if there is one, and leaves the timer
+    # units in place, because they update a different install directory.
     CHROME_BIN=${CHROME_BIN:-$(command -v google-chrome || command -v google-chrome-stable \
         || command -v chromium || command -v chromium-browser || true)}
     [[ -n "$CHROME_BIN" ]] || die 'no google-chrome or chromium on PATH; set CHROME_BIN'
@@ -1946,9 +1947,9 @@ if ((LINUX_MODE)); then
 
     # The installer does not edit a profile while its browser is running,
     # because Chrome rewrites Preferences on exit and would undo the
-    # installer's changes. It tells from the SingletonLock symlink
-    # (<hostname>-<pid>) in the user data directory, as this check does.
-    # Chrome instances using other profiles do not matter.
+    # installer's changes. Like this check, it reads the browser's process ID
+    # from the SingletonLock symlink (<hostname>-<pid>) in the user data
+    # directory, so a Chrome using another user data directory does not count.
     profile_in_use() {
         local target
         target=$(readlink -- "$1/SingletonLock" 2>/dev/null) || return 1
@@ -1982,11 +1983,11 @@ if ((LINUX_MODE)); then
     # XDG_CONFIG_HOME is unset for this launch only. It is set so the installer
     # finds the temporary profile, but while it is set, Chrome computes that
     # same directory as its own default user-data-dir and then rejects
-    # --remote-debugging-port. --ozone-platform=x11 keeps Chrome on Xvfb. Run
-    # from a Wayland desktop, Chrome would otherwise open its window on the
-    # desktop, even without WAYLAND_DISPLAY, since libwayland then connects
-    # to wayland-0. The screenshots would be black, and openPopup() would fail
-    # whenever that window does not have focus.
+    # --remote-debugging-port. --ozone-platform=x11 keeps Chrome on Xvfb. When
+    # the harness runs on a Wayland desktop, Chrome would otherwise open its
+    # window on that desktop, even with WAYLAND_DISPLAY unset, because
+    # libwayland then connects to wayland-0. The screenshots would be black,
+    # and openPopup() would fail whenever that window does not have focus.
     env -u XDG_CONFIG_HOME "$CHROME_BIN" --user-data-dir="$LINUX_PROFILE" \
         --ozone-platform=x11 \
         --no-first-run --no-default-browser-check --disable-gpu --no-sandbox \
@@ -2016,8 +2017,8 @@ if ((LINUX_MODE)); then
     note "Linux Chrome CDP at $CDP_ENDPOINT"
 
     # An update has to work while Chrome is running: it replaces the files and
-    # leaves Preferences alone. Recording an older version makes install
-    # rebuild now, and the probe below then runs against the swapped files.
+    # leaves Preferences alone. Writing version 0.0.0 into the state file makes
+    # install rebuild now, and the probe below then runs against the new files.
     note 'Updating the install while Chrome is running.'
     "$PYTHON_CMD" - "$WORK_DIR/ubo-lpa/.state.json" <<'PY'
 import json
@@ -2256,8 +2257,9 @@ if not module.IS_WINDOWS:
     raise SystemExit("stage_windows.py must run under Windows Python")
 
 
-# The installer's own --ubo-zip route, which the MSI uses for the release it
-# bundles: no download, and the version comes from the zip's manifest.
+# The zip goes to WindowsInstaller as --ubo-zip passes it, which is also how
+# the MSI installs the release it bundles: nothing is downloaded, and the
+# version comes from the zip's manifest.
 if module.ubo_zip_version(ubo_archive) != ubo_version:
     raise SystemExit(f"{ubo_archive} is not uBO {ubo_version}")
 installer = module.WindowsInstaller(install_root, ubo_archive)

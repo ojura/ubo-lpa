@@ -28,7 +28,7 @@ def font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
             return ImageFont.truetype(name, size)
         except OSError:
             continue
-    raise SystemExit("no usable font found")
+    raise SystemExit("found neither Segoe UI nor DejaVu Sans")
 
 
 def shield(width: float, height: float, x: float, y: float) -> list[tuple[float, float]]:

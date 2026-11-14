@@ -29,7 +29,7 @@ jobs:
       - name: Install cryptography, and pywinauto and Pillow for the test
         run: python -m pip install cryptography pywinauto pillow
 
-      - name: Test install, the scheduled task, load, an update under Chrome and uninstall
+      - name: Test install, the scheduled task, load, an update while Chrome runs, and uninstall
         env:
           UBO_OUT: ${{ runner.temp }}\ubo-lpa-windows-results
         run: python tests/windows/run.py
@@ -165,14 +165,14 @@ jobs:
           done <<EOF
           wizard-1-welcome.png|setup-1-welcome.png|Welcome
           wizard-2-release.png|setup-2-release.png|The uBlock Origin release: the newest one on GitHub, or the one bundled with the installer
-          wizard-3-chrome.png|setup-3-chrome.png|$chrome: a current Chrome, in which Manifest V2 extensions no longer run, and the profiles that get uBlock Origin
+          wizard-3-chrome.png|setup-3-chrome.png|Setup found $chrome. Manifest V2 extensions no longer run in this Chrome; the profiles ticked here get uBlock Origin
           wizard-4-options.png|setup-4-options.png|The folder, maintenance and the daily update
           wizard-5-ready.png|setup-5-ready.png|Ready to install
           wizard-6-progress.png|setup-6-progress.png|Installing
-          consent-1.png|setup-7-chrome-prompt.png|Chrome asks whether to allow remote debugging; Allow is the one click Setup needs
+          consent-1.png|setup-7-chrome-prompt.png|Chrome asks whether to allow remote debugging; Allow is the only click Setup needs in Chrome
           wizard-7-finish.png|setup-8-finish.png|Finished
-          desktop-after-install.png|setup-9-chrome.png|uBlock Origin at work: its panel, from its pinned button, on adblock-tester.com
-          maintenance-change-1-maintenance.png|setup-10-maintenance.png|The Start menu entry opens maintenance: update now, change settings or remove
+          desktop-after-install.png|setup-9-chrome.png|uBlock Origin's panel on adblock-tester.com, opened from its pinned toolbar button
+          maintenance-change-1-maintenance.png|setup-10-maintenance.png|The Start menu entry opens the maintenance page: Update now, Change settings or Remove
           portable-3-options.png|setup-11-portable.png|Without maintenance, Setup leaves nothing but the folder
           EOF
 
@@ -186,13 +186,13 @@ jobs:
 
           notes="ubo-lpa.msi version 1.0.${{ github.run_number }}, built from $GITHUB_SHA and tested by the Windows workflow.
 
-          It installs ubo-lpa for the current user without administrator rights. The wizard offers the newest uBlock Origin release or the one bundled with the MSI, the Chrome profiles that get it, and whether to update daily; without maintenance it leaves nothing but the uBlock Origin folder. To download and start it from PowerShell:
+          It installs ubo-lpa for the current user without administrator rights. The wizard asks which uBlock Origin release to install (the newest one or the one bundled with the MSI), which Chrome profiles get it, and whether to update it daily. An install without maintenance leaves nothing but the uBlock Origin folder. To download and start it from PowerShell:
 
               irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex
 
           The MSI is not code-signed, so Windows SmartScreen warns about it.
 
-          ## Setup, as the msi job saw it on a Windows runner
+          ## Screenshots of Setup, taken by the msi job on a Windows runner
 
           $gallery"
           if gh release view latest -R "$REPO" >/dev/null 2>&1; then
@@ -202,7 +202,8 @@ jobs:
               --notes "$notes" --latest
           fi
           gh release upload latest -R "$REPO" ubo-lpa.msi --clobber
-          # Earlier builds uploaded the screenshots here.
+          # Delete every asset but the MSI, such as the screenshots that
+          # earlier builds uploaded here.
           for asset in $(gh release view latest -R "$REPO" --json assets -q '.assets[].name'); do
             if [ "$asset" != ubo-lpa.msi ]; then
               gh release delete-asset latest "$asset" -R "$REPO" -y

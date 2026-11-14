@@ -8,8 +8,8 @@
   change or remove it.
 
   Without maintenance, the wizard does the same work from its own temporary
-  copy of the payload and skips ExecuteAction, so Windows Installer installs and
-  registers nothing: the chosen folder is all that is left.
+  copy of the payload and skips ExecuteAction, so Windows Installer does not
+  install files or register the product: the chosen folder is all that is left.
 
   build.py assembles payload\, payload.zip, the custom actions and the images,
   then calls wix build with Version, UboVersion and UboZip.
