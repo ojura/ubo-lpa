@@ -262,7 +262,9 @@ def show_ubo_panel(path: Path) -> None:
                        if b.window_text().startswith("uBlock Origin")]
             if buttons:
                 window.set_focus()
-                buttons[0].invoke()
+                # Chrome's toolbar buttons do not offer UI Automation's Invoke
+                # pattern, so this is a mouse click.
+                buttons[0].click_input()
                 time.sleep(5)
                 note(f"opened uBO's panel from its toolbar button {buttons[0].window_text()!r}")
                 break
