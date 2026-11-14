@@ -177,6 +177,19 @@ def click(window, text, timeout: int = 300) -> None:
     control(window, text, timeout=timeout).click()
 
 
+def toggle(window, text) -> None:
+    """Flip a checkbox, or select a radio button, and wait for its new state.
+    BM_CLICK is sent, not posted, and makes the control tell the dialog, which
+    sets the property."""
+    box = control(window, text)
+    before = box.get_check_state()
+    box.send_message(0x00F5)  # BM_CLICK
+    deadline = time.time() + 10
+    while box.get_check_state() == before and time.time() < deadline:
+        time.sleep(0.25)
+    check(box.get_check_state() != before, f"{text} did not change")
+
+
 def first_page(window, button: str) -> None:
     """Wait for the first page: until then Windows Installer shows its
     preparing page, here while UboProbe runs ubo-lpa.py setup-info."""
@@ -238,10 +251,9 @@ def maintenance(action: str, shot: str, untick_updates: bool = False) -> None:
               "the Chrome page does not show that Default already has uBlock Origin")
         click(window, "&Next")
         if untick_updates:
-            box = control(window, "&Update uBlock Origin daily")
-            if box.get_check_state():
-                box.click()
-            check(not box.get_check_state(), "could not untick the daily update")
+            check(control(window, "&Update uBlock Origin daily").get_check_state() == 1,
+                  "the daily update is not ticked before it is turned off")
+            toggle(window, "&Update uBlock Origin daily")
         page(window, f"{shot}-4-options")
         click(window, "&Next")
     page(window, f"{shot}-5-ready")
@@ -263,7 +275,7 @@ def install_portable(msi: Path) -> str:
     window = wizard()
     first_page(window, "&Next")
     click(window, "&Next")
-    click(window, "The release &bundled with this installer")
+    toggle(window, "The release &bundled with this installer")
     texts = page(window, "portable-1-release")
     links = [m.group(1) for t in texts for m in [re.search(r"uBlock Origin (\d+\.\d+\.\d+) on GitHub", t)] if m]
     check(links, f"the release page links no release: {texts}")
@@ -276,9 +288,7 @@ def install_portable(msi: Path) -> str:
     folder = control(window, re.compile(r".*"), cls="Edit")
     folder.set_edit_text(str(PORTABLE))
     folder.type_keys("{TAB}")
-    box = control(window, re.compile(r"Install &maintenance.*"))
-    box.click()
-    check(not box.get_check_state(), "could not untick maintenance")
+    toggle(window, re.compile(r"Install &maintenance.*"))
     page(window, "portable-3-options")
     click(window, "&Next")
     page(window, "portable-4-ready")
