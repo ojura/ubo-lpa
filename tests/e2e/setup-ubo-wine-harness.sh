@@ -2228,10 +2228,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import shutil
 import sys
-import tempfile
-import zipfile
 from pathlib import Path
 
 
@@ -2259,28 +2256,11 @@ if not module.IS_WINDOWS:
     raise SystemExit("stage_windows.py must run under Windows Python")
 
 
-def resolve_latest_tag():
-    return ubo_version, True
-
-
-def download_ubo(tag: str, dest: Path) -> None:
-    if tag != ubo_version:
-        raise RuntimeError(f"unexpected requested tag {tag!r}")
-    with tempfile.TemporaryDirectory() as temporary:
-        with zipfile.ZipFile(ubo_archive) as archive:
-            archive.extractall(temporary)
-        root = Path(temporary) / "uBlock0.chromium"
-        if not (root / "manifest.json").is_file():
-            raise RuntimeError("unexpected uBO archive layout")
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.move(str(root), str(dest))
-    module.ok(f"Extracted cached uBO {tag}")
-
-
-module.resolve_latest_tag = resolve_latest_tag
-module.download_ubo = download_ubo
-installer = module.WindowsInstaller(install_root)
+# The installer's own --ubo-zip route, which the MSI uses for the release it
+# bundles: no download, and the version comes from the zip's manifest.
+if module.ubo_zip_version(ubo_archive) != ubo_version:
+    raise SystemExit(f"{ubo_archive} is not uBO {ubo_version}")
+installer = module.WindowsInstaller(install_root, ubo_archive)
 result = installer.install(quiet=True)
 state = installer.state()
 problems = module.check(

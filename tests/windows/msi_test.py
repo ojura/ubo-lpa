@@ -155,12 +155,13 @@ def control(window, text, cls: str = "Button", timeout: int = 300):
     it, a compiled pattern). Before the first page, and while a page's custom
     action runs, Windows Installer shows the buttons disabled. WiX's Ready page
     has two of some buttons, with and without the UAC shield, and shows one;
-    pywinauto's own lookup counts hidden controls too.
+    pywinauto's own lookup counts hidden controls too. A radio button is a
+    child of its group's control, so all descendants are searched.
     """
     deadline = time.time() + timeout
     while True:
         try:
-            for child in window.wrapper_object().children():
+            for child in window.wrapper_object().descendants():
                 label = child.window_text()
                 matches = text.fullmatch(label) if hasattr(text, "fullmatch") else label == text
                 if (child.class_name() == cls and matches
