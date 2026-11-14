@@ -1788,6 +1788,49 @@ def switch_off_remote_debugging(devtools: DevTools, user_data: Path) -> None:
     ok("Turned remote debugging off again.")
 
 
+GUIDE_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Load uBlock Origin in Chrome</title>
+<style>
+  body { margin: 0; font: 15px/1.5 "Segoe UI", system-ui, sans-serif; color: #1f2328; background: #f6f8fa; }
+  header { background: linear-gradient(135deg, #a3241a, #5e0f0a); color: #fff; padding: 26px 40px; }
+  header h1 { margin: 0; font-size: 23px; font-weight: 600; }
+  header p { margin: 6px 0 0; opacity: .9; }
+  main { max-width: 760px; margin: 26px auto; padding: 0 24px; }
+  ol { list-style: none; counter-reset: s; padding: 0; margin: 0; }
+  li { counter-increment: s; position: relative; background: #fff; border: 1px solid #d8dee4;
+       border-radius: 10px; padding: 15px 18px 15px 62px; margin-bottom: 11px; }
+  li::before { content: counter(s); position: absolute; left: 18px; top: 14px; width: 30px; height: 30px;
+               border-radius: 50%; background: #8c1c13; color: #fff; font-weight: 600;
+               text-align: center; line-height: 30px; }
+  .copy { display: flex; gap: 8px; margin-top: 8px; }
+  code { flex: 1; font: 13px/1.4 Consolas, monospace; background: #f6f8fa; border: 1px solid #d8dee4;
+         border-radius: 6px; padding: 7px 10px; overflow-wrap: anywhere; }
+  button { font: inherit; font-size: 13px; border: 1px solid #8c1c13; color: #8c1c13; background: #fff;
+           border-radius: 6px; padding: 0 14px; cursor: pointer; }
+</style></head>
+<body>
+<header><h1>Load uBlock Origin in Chrome</h1>
+<p>Setup could not load uBlock Origin into Chrome itself. These steps do it by hand, once;
+   the update log in the same folder says what went wrong.</p></header>
+<main><ol>
+  <li>Open the extensions page: paste this into Chrome's address bar.
+    <div class="copy"><code>chrome://extensions</code><button>Copy</button></div></li>
+  <li>Turn on <b>Developer mode</b>, top right.</li>
+  <li>Click <b>Load unpacked</b> and select this folder.
+    <div class="copy"><code>__EXT__</code><button>Copy</button></div></li>
+  <li>Click <b>Load unpacked</b> again and select the toolbar button's folder.
+    <div class="copy"><code>__COMP__</code><button>Copy</button></div></li>
+  <li>Pin <b>uBlock Origin toolbar button</b> from the puzzle-piece menu next to the address bar.</li>
+</ol></main>
+<script>
+for (const b of document.querySelectorAll(".copy button"))
+  b.onclick = () => navigator.clipboard.writeText(b.previousElementSibling.textContent)
+    .then(() => { b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1500); });
+</script>
+</body></html>
+"""
+
+
 def chrome_exe() -> str | None:
     """Google Chrome's chrome.exe, from App Paths or its usual folders."""
     import winreg
