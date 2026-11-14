@@ -32,10 +32,12 @@ import base64
 import datetime
 import hashlib
 import html
+import inspect
 import json
 import os
 import platform
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -52,10 +54,21 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 GITHUB_REPO = "gorhill/uBlock"
-# Releases that all eight edits apply to. Edit 8 patches js/vapi-scripting.js,
+# Releases that all nine edits apply to. Edit 8 patches js/vapi-scripting.js,
 # which uBO has had since 1.76.0.
 KNOWN_GOOD = ["1.76.2", "1.76.0"]
 RESIZE_MSG = "ubo-resize"
+FRAMES_SCRIPT = "/js/ubolpa-frames.js"
+# The session rule that switches the launch guard off. It allows page
+# navigations, at a higher priority than the guard's rule, which redirects them
+# to wait.html. The companion's worker adds it once uBO's request listener is
+# installed, and wait.html adds it before it loads the address it was given.
+GUARD_OPEN_RULE = {
+    "id": 2,
+    "priority": 2,
+    "action": {"type": "allow"},
+    "condition": {"resourceTypes": ["main_frame"]},
+}
 STOCK_UBO_ID = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
 TIMER_NAME = "ubo-lpa-update"
 
@@ -340,8 +353,25 @@ def write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def patch_ubo(ext: Path, companion_id: str, embed_key: str | None) -> None:
-    """Apply the eight edits in WRITEUP.md to a freshly extracted copy."""
+def require(path: Path, *anchors: str) -> str:
+    """
+    The text of one of uBO's files, after checking that it still contains the
+    code a patch relies on. When uBO changes that code, the build stops instead
+    of applying an edit that does not fit it.
+    """
+    if not path.exists():
+        die(f"{path.name} is missing; uBO's layout changed, or the release is "
+            "older than 1.76.0")
+    source = path.read_text(encoding="utf-8")
+    for anchor in anchors:
+        if anchor not in source:
+            first = anchor.strip().splitlines()[0]
+            die(f"{path.name}: {first!r} not found; uBO's layout changed")
+    return source
+
+
+def patch_ubo(ext: Path, companion_id: str, embed_key: str | None, token: str) -> None:
+    """Apply the nine edits in WRITEUP.md to a freshly extracted copy."""
     manifest_path = ext / "manifest.json"
     manifest = read_json(manifest_path)
 
@@ -385,8 +415,22 @@ def patch_ubo(ext: Path, companion_id: str, embed_key: str | None) -> None:
         war.append("popup-fenix.html")
     manifest["web_accessible_resources"] = war
 
-    # 5. let the companion message uBO for the badge count
+    # 5. let the companion and uBO message each other
     manifest["externally_connectable"] = {"ids": [companion_id]}
+
+    # 9. a content script for frames without an http(s) URL of their own. It
+    #    is a separate entry because match_origin_as_fallback also covers
+    #    blob: frames, where uBO's own content scripts are not meant to run.
+    scripts = [entry for entry in manifest.get("content_scripts", [])
+               if FRAMES_SCRIPT not in entry.get("js", [])]
+    scripts.insert(0, {
+        "all_frames": True,
+        "js": [FRAMES_SCRIPT],
+        "match_origin_as_fallback": True,
+        "matches": ["http://*/*", "https://*/*"],
+        "run_at": "document_start",
+    })
+    manifest["content_scripts"] = scripts
 
     # 4. frame-ancestors in the CSP
     # A web-accessible resource can be framed by any page, and uBO's panel has
@@ -404,22 +448,49 @@ def patch_ubo(ext: Path, companion_id: str, embed_key: str | None) -> None:
     # getManifest().browser_action.default_title.
     write_json(manifest_path, manifest)
 
-    # 2. browserAction shim, inside webext.js so every uBO page is covered
+    # 2. shim for chrome.browserAction and chrome.commands, inside webext.js
+    #    so every uBO page is covered
     webext = ext / "js" / "webext.js"
-    source = webext.read_text(encoding="utf-8")
+    source = require(webext, "const promisifyNoFail")
     if "ubo-lpa-shim" not in source:
         anchor = source.find("const promisifyNoFail")
-        if anchor < 0:
-            die("webext.js: promisifyNoFail not found; uBO's layout changed")
         shim = asset("webext-shim.js")
         webext.write_text(source[:anchor] + shim + "\n" + source[anchor:], encoding="utf-8")
 
-    # 6. badge bridge
+    # 6. companion bridge. It answers the companion's questions, runs the
+    #    keyboard commands that the companion passes on, and sends the
+    #    companion the toolbar state. The bridge computes the badge and the
+    #    title with a copy of the code in vAPI.setIcon(), reaches
+    #    js/commands.js through the listener that file registers, and reads
+    #    vAPI.messaging.defaultHandler to tell whether uBO's pages can connect.
+    #    The require() calls below check that these lines of uBO's code are
+    #    still the ones the bridge was written against.
     vapi = ext / "js" / "vapi-background.js"
-    source = vapi.read_text(encoding="utf-8")
-    if "uboBadge" not in source:
+    source = require(
+        vapi,
+        "    defaultHandler: null,",
+        "        this.defaultHandler = defaultHandler;\n"
+        "\n"
+        "        browser.runtime.onConnect.addListener(",
+        "const toTabId = function(tabId) {",
+        "    vAPI.setIcon = async function(tabId, details) {",
+        "        const hasUnprocessedRequest = vAPI.net && vAPI.net.hasUnprocessedRequest(tabId);",
+        "        const { badge, color } = hasUnprocessedRequest\n"
+        "            ? { badge: '!', color: '#FC0' }\n"
+        "            : details;",
+        "    const titleTemplate = `${browser.runtime.getManifest().browser_action.default_title} ({badge})`;",
+        "            const title = titleTemplate.replace('{badge}',\n"
+        "                state === 1 ? (badge !== '' ? badge : '0') : 'off'\n"
+        "            );",
+        "    vAPI.setDefaultIcon = function(flavor, text) {",
+        "vAPI.commands = browser.commands;",
+    )
+    require(ext / "js" / "commands.js",
+            "if ( vAPI.commands instanceof Object === false ) { return; }",
+            "vAPI.commands.onCommand.addListener(async command => {")
+    if "ubo-lpa companion bridge" not in source:
         with vapi.open("a", encoding="utf-8") as handle:
-            handle.write(asset("badge-bridge.js"))
+            handle.write(asset("companion-bridge.js", COMP_ID=companion_id, RECIPE=recipe()))
 
     # 7. resize notifier, external file because uBO's CSP is script-src 'self'
     (ext / "js" / "popup-resize.js").write_text(
@@ -432,95 +503,111 @@ def patch_ubo(ext: Path, companion_id: str, embed_key: str | None) -> None:
         html = html.replace("</body>", '<script src="js/popup-resize.js"></script>\n</body>')
         popup.write_text(html, encoding="utf-8")
 
-    # 8. hand each site's main-world scriptlets to the companion, which
-    #    registers them with chrome.userScripts so they run before the page's
-    #    own scripts
-    patch_scriptlet_injection(ext / "js" / "vapi-scripting.js", companion_id)
+    # 8. hand each site's scriptlets to the companion, which registers them
+    #    with chrome.userScripts so they run before the page's own scripts
+    patch_scriptlet_injection(ext, companion_id, token)
+
+    # 9. the content script itself
+    (ext / FRAMES_SCRIPT.lstrip("/")).write_text(
+        asset("ubolpa-frames.js", TOKEN=token), encoding="utf-8")
 
     ok("uBO patched")
 
 
-def patch_scriptlet_injection(path: Path, companion_id: str) -> None:
+def patch_scriptlet_injection(ext: Path, companion_id: str, token: str) -> None:
     """
-    Edit 8. Each replacement must match text in uBO's vapi-scripting.js
-    exactly once; when uBO changes that text, the build stops and does not
-    write a partly edited file.
+    Edit 8. Checks the uBO code the bridge relies on, adds one statement to
+    getContentScripts() in scriptlet-filtering.js, and edits vapi-scripting.js.
+    Each replacement must match uBO's text exactly once; when uBO changes that
+    text, the build stops, and the caller discards the staged copy.
     """
-    if not path.exists():
-        die(f"{path.name} is missing; uBO 1.76.0 or newer is required")
-    source = path.read_text(encoding="utf-8")
+    # The bridge rewrites the statement that lists the isolated-world scriptlet
+    # functions, removes the logger's relay from the registered copy, and
+    # searches uBO's scriptlet registry for the scriptlets that call extension
+    # APIs.
+    require(ext / "js" / "scriptlet-begin.template.js",
+            "scriptletGlobals.functionRefs = self.$scriptletFunctionRefs$;")
+    require(ext / "js" / "scriptlet-filtering.js",
+            "code.push(`initCommChannel(${JSON.stringify(options.scriptletGlobals.bcSecret)});`);")
+    require(ext / "js" / "resources" / "scriptlets.js",
+            "export const builtinScriptlets = registeredScriptlets;")
+    # The bridge registers only hostnames that have scriptlet filters of their
+    # own. It tells them apart by the hostname parts of the filters that uBO
+    # collects for a hostname. The statement added to getContentScripts() below
+    # passes those parts on. hasOwn() in the bridge relies on how
+    # static-ext-filtering-db.js stores and collects them.
+    require(ext / "js" / "static-ext-filtering-db.js",
+            "        if ( target.includes('/') ) {\n"
+            "            return this.#storeMatcher(target, iStr);",
+            "    const pathPos = target.indexOf('\\\\/');\n"
+            "    if ( pathPos !== -1 ) {\n"
+            "        return {\n"
+            "            isRegex,\n"
+            "            hn: `${target.slice(1, pathPos)}$`,",
+            "                details.matches ??= [];\n"
+            "                if ( details.matches.includes('*') ) { continue; }\n"
+            "                if ( hn === '*' ) {\n"
+            "                    details.matches = [ '*' ];\n"
+            "                } else {\n"
+            "                    details.matches.push(hn);",
+            "                if ( hn.endsWith('>>') === false ) { continue; }")
+    filtering = ext / "js" / "scriptlet-filtering.js"
+    source = require(filtering,
+                     "        const map = this.scriptletDB.retrieveOne(hostname, domain);")
+    if "ubolpaTargets" not in source:
+        old = "        const out = { hostname, scriptletGlobals };\n"
+        if source.count(old) != 1:
+            die(f"scriptlet-filtering.js: expected exactly one {old.strip()!r}; "
+                "uBO's layout changed")
+        filtering.write_text(source.replace(old, old + (
+            "        // ubo-lpa: the hostname parts of the filters collected above; see\n"
+            "        // hasOwn() in js/vapi-scripting.js.\n"
+            "        out.ubolpaTargets = Array.from(map.values()).flatMap(a => a.matches ?? []);\n"
+        )), encoding="utf-8")
+    # After a reset, the bridge has uBO work out the known hostnames'
+    # scriptlets again. For each hostname, it deletes the entry in
+    # contentScriptDict and calls uBO's own registerContentScript(), which also
+    # keeps the copy uBO injects at the next navigation.
+    path = ext / "js" / "vapi-scripting.js"
+    source = require(
+        path,
+        "const contentScriptDict = new Map();",
+        "function registerContentScript(url) {\n"
+        "    const hostname = hostnameFromURI(url);\n"
+        "    if ( hostname === '' ) { return; }\n"
+        "    if ( contentScriptDict.has(hostname) ) { return; }\n"
+        "    const result = getContentScripts(url);",
+    )
     if "ubolpaUserScripts" in source:
         return
+    absent = (f"self.dispatchEvent(new CustomEvent('{token}:main', "
+              "{ cancelable: true }))")
     edits = [
         (
             "/* global browser */\n",
             "/* global browser */\n"
-            + asset("userscripts-bridge.js", COMP_ID=companion_id),
+            + asset("userscripts-bridge.js", COMP_ID=companion_id, TOKEN=token,
+                    EPOCH=f"{token}.{recipe()}"),
         ),
+        # The main-world code is injected only where neither the registered
+        # script nor js/ubolpa-frames.js has run it.
         (
-            "    if ( tabId < 0 ) { return; }\n"
-            "    rememberFrame(details);\n"
-            "    let { url } = details;\n"
-            "    if ( frameId !== 0 && reIsHTTP.test(url) === false ) {\n"
-            "        url = getEffectiveURL(tabId, frameId);\n"
-            "        if ( url === undefined ) { return; }\n"
-            "    }\n"
-            "    if ( reIsHTTP.test(url) === false ) { return; }\n"
-            "    registerContentScript(url);\n",
-            "    if ( tabId < 0 ) { return; }\n"
-            "    rememberFrame(details);\n"
-            "    ubolpaUserScripts.navStarted(details);\n"
-            "    let { url } = details;\n"
-            "    if ( frameId !== 0 && reIsHTTP.test(url) === false ) {\n"
-            "        url = getEffectiveURL(tabId, frameId);\n"
-            "        if ( url === undefined ) { return; }\n"
-            "    }\n"
-            "    if ( reIsHTTP.test(url) === false ) { return; }\n"
-            "    registerContentScript(url);\n",
+            "    if ( mainCode ) {\n"
+            "        let script;\n",
+            f"    if ( mainCode && self.ubolpaFrameDone !== true && {absent} ) {{\n"
+            "        let script;\n",
         ),
         (
             "    const code = uBO_assembleIsolatedCode(result) ?? null;\n"
             "    contentScriptDict.set(hostname, { code, t: Date.now() });\n",
-            "    const code = uBO_assembleIsolatedCode(result) ?? null;\n"
-            "    const entry = { code, t: Date.now() };\n"
-            "    contentScriptDict.set(hostname, entry);\n"
-            "    ubolpaUserScripts.register(hostname, entry, result);\n",
-        ),
-        (
-            "    const entry = contentScriptDict.get(hostname);\n"
-            "    if ( Boolean(entry?.code) === false ) { return; }\n"
-            "    webext.tabs.executeScript(tabId, {\n"
-            "        frameId,\n"
-            "        matchAboutBlank: true,\n"
-            "        runAt: 'document_start',\n"
-            "        code: entry.code,\n"
-            "    });\n"
-            "    entry.t = Date.now();\n",
-            "    const entry = contentScriptDict.get(hostname);\n"
-            "    const code = ubolpaUserScripts.codeFor(entry, details);\n"
-            "    if ( Boolean(code) === false ) { return; }\n"
-            "    webext.tabs.executeScript(tabId, {\n"
-            "        frameId,\n"
-            "        matchAboutBlank: true,\n"
-            "        runAt: 'document_start',\n"
-            "        code,\n"
-            "    });\n",
-        ),
-        (
-            "    for ( const key of sortedKeys ) {\n"
-            "        contentScriptDict.delete(key);\n"
-            "    }\n",
-            "    for ( const key of sortedKeys ) {\n"
-            "        contentScriptDict.delete(key);\n"
-            "        ubolpaUserScripts.forget(key);\n"
-            "    }\n",
+            "    const code = uBO_assembleIsolatedCode(ubolpaUserScripts.late(result)) ?? null;\n"
+            "    contentScriptDict.set(hostname, { code, t: Date.now() });\n"
+            "    ubolpaUserScripts.register(hostname, result);\n",
         ),
         (
             "    if ( initialized ) { return; }\n",
             "    if ( initialized ) { return; }\n"
-            "    // Registered user scripts outlive a restart, but the secrets in\n"
-            "    // their code do not.\n"
-            "    ubolpaUserScripts.reset();\n",
+            "    ubolpaUserScripts.start();\n",
         ),
         (
             "export function reset() {\n"
@@ -538,52 +625,177 @@ def patch_scriptlet_injection(path: Path, companion_id: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
+def worker_file_name(source: str) -> str:
+    """
+    The file name for a service worker script. The name contains a hash of the
+    script's content.
+
+    Chrome stores the worker script when it registers the worker and runs that
+    copy from then on. An update replaces the files while the extension stays
+    loaded. When Chrome next starts, it registers the worker again only when
+    the extension's version differs from the one it recorded
+    (ServiceWorkerTaskQueue::ActivateExtension). For the same URL,
+    ServiceWorkerRegisterJob resolves at once, so the new registration fetches
+    the script only when its URL differs from the registered one. A changed
+    worker under the same file name would therefore never run.
+    """
+    return f"sw-{hashlib.sha256(source.encode('utf-8')).hexdigest()[:12]}.js"
+
+
+def build_version() -> str:
+    """
+    The companion's manifest version: "1." followed by three random 16-bit
+    numbers, so that every build has a new version.
+
+    Chrome registers the worker again only when the version differs from the
+    one it recorded, and the version it recorded is usually that of an earlier
+    build. Chrome records the version when the new registration is stored
+    (OnRegistrationStoredSync in service_worker_task_queue.cc), and it skips
+    that step when a worker start fails before then (OnWorkerStartFail). After
+    an update, such a start does fail. An event that waited for the
+    registration starts the registered worker, which is still the previous
+    build's, and Chrome refuses to start a worker whose file is not the one in
+    the manifest (AllowServiceWorker in
+    chrome_content_browser_client_extensions_part.cc).
+
+    With a version derived from the worker's content, the worker can stop
+    running after an update. This was measured with builds A, B and A installed
+    in turn, each followed by a start. After B's start, Chrome still had A's
+    version recorded, so with A's files back it did not register the worker,
+    and the worker did not run until the extension was reloaded by hand.
+    """
+    return ".".join(["1"] + [str(secrets.randbelow(65536)) for _ in range(3)])
+
+
 def build_companion(comp: Path, ubo_id: str, ubo_dir: Path, embed_key: str | None) -> None:
     if comp.exists():
         shutil.rmtree(comp)
     (comp / "img").mkdir(parents=True)
+    ubo_manifest = read_json(ubo_dir / "manifest.json")
 
+    # uBO's toolbar icons: filtering on, off for the site, and still loading.
     icons = {}
-    for size in (16, 32, 64):
-        src = ubo_dir / "img" / f"icon_{size}.png"
-        if src.exists():
-            shutil.copy2(src, comp / "img" / f"icon_{size}.png")
-            icons[str(size)] = f"img/icon_{size}.png"
+    for flavor in ("", "-off", "-loading"):
+        for size in (16, 32, 64):
+            name = f"icon_{size}{flavor}.png"
+            if not (ubo_dir / "img" / name).exists():
+                die(f"img/{name} not found; uBO's layout changed")
+            shutil.copy2(ubo_dir / "img" / name, comp / "img" / name)
+            if not flavor:
+                icons[str(size)] = f"img/{name}"
+
+    # The text uBO shows for a page it could not filter at browser launch.
+    locale = ubo_manifest.get("default_locale", "en")
+    messages = read_json(ubo_dir / "_locales" / locale / "messages.json")
+    early_tip = messages.get("unprocessedRequestTooltip", {}).get("message") or (
+        "Could not filter properly at browser launch. "
+        "Reload the page to ensure proper filtering.")
+
+    worker = asset("companion/sw.js", UBO_ID=ubo_id, EARLY_TIP=json.dumps(early_tip),
+                   OPEN_RULE=json.dumps(GUARD_OPEN_RULE), RECIPE=recipe())
+    worker_name = worker_file_name(worker)
 
     manifest = {
         "manifest_version": 3,
         "name": "uBlock Origin toolbar button",
-        "version": "1.0",
+        "version": build_version(),
+        # chrome://extensions shows version_name in place of the version. It is
+        # "build" followed by the first eight characters of the recipe, the
+        # hash that identifies the build. The popup compares the full recipe
+        # with the ones that uBO and the worker report.
+        "version_name": f"build {recipe()[:8]}",
         "description": (
-            "Provides the toolbar button for uBlock Origin, which runs as a "
-            "legacy packaged app so Chrome's Manifest V2 shutdown does not "
-            "disable it."
+            "Provides the toolbar button and keyboard shortcuts for "
+            "uBlock Origin, which runs as a legacy packaged app so that "
+            "Chrome's Manifest V2 shutdown does not disable it. Also runs "
+            "uBlock Origin's scriptlets before a page's own scripts."
         ),
-        # userScripts and host access let it register uBO's main-world
-        # scriptlets so they run before the page's own scripts (edit 8). Only
-        # uBO may message it.
-        "permissions": ["tabs", "userScripts"],
+        # userScripts and host access let it register uBO's scriptlets so they
+        # run before the page's own scripts (edit 8). Only uBO may message it.
+        # declarativeNetRequestWithHostAccess is for the launch guard, whose
+        # rule redirects page navigations to wait.html. Chrome only follows a
+        # redirect to an extension page that is web-accessible to the site the
+        # navigation came from, so wait.html is listed in
+        # web_accessible_resources.
+        "permissions": ["declarativeNetRequestWithHostAccess", "storage", "tabs", "userScripts"],
         "host_permissions": ["<all_urls>"],
+        "web_accessible_resources": [{"resources": ["wait.html"], "matches": ["<all_urls>"]}],
+        # Any site can frame a web-accessible page, and wait.html is one.
+        # frame-ancestors 'none' forbids framing the companion's pages. The
+        # companion never shows wait.html in a frame, and the page only loads
+        # the address it was given.
+        "content_security_policy": {
+            "extension_pages": "script-src 'self'; object-src 'self'; frame-ancestors 'none'",
+        },
+        # Split mode, as in uBO: one instance for regular windows and one for
+        # incognito windows, so that each exchanges messages with its own uBO
+        # instance.
+        "incognito": "split",
         "externally_connectable": {"ids": [ubo_id]},
         "action": {
             "default_popup": "popup.html",
             "default_title": "uBlock Origin",
             "default_icon": icons,
         },
-        "background": {"service_worker": "sw.js"},
+        # A legacy packaged app cannot declare keyboard commands, so the
+        # companion declares uBO's. Chrome lists their shortcuts under the
+        # companion, and the companion's worker passes each command on to uBO.
+        "commands": {
+            name: {"description": command.get("description", name)}
+            for name, command in ubo_manifest.get("commands", {}).items()
+        },
+        "background": {"service_worker": worker_name},
     }
     if embed_key:
         manifest["key"] = embed_key
     write_json(comp / "manifest.json", manifest)
 
-    (comp / "popup.html").write_text(asset("companion/popup.html"), encoding="utf-8")
-    (comp / "popup.js").write_text(
-        asset("companion/popup.js", UBO_ID=ubo_id, RESIZE_MSG=RESIZE_MSG), encoding="utf-8"
-    )
-    (comp / "sw.js").write_text(
-        asset("companion/sw.js", UBO_ID=ubo_id), encoding="utf-8"
-    )
+    (comp / worker_name).write_text(worker, encoding="utf-8")
+    # The pages: the popup and the launch guard's wait page, with ubo.js,
+    # which both share.
+    for name, subs in (
+        ("ubo.js", {"UBO_ID": ubo_id}),
+        ("popup.html", {}),
+        ("popup.js", {"RESIZE_MSG": RESIZE_MSG, "RECIPE": recipe(),
+                      "UBO_VERSION": str(ubo_manifest.get("version", ""))}),
+        ("wait.html", {}),
+        ("wait.js", {"OPEN_RULE": json.dumps(GUARD_OPEN_RULE)}),
+    ):
+        (comp / name).write_text(asset(f"companion/{name}", **subs), encoding="utf-8")
     ok("Companion built")
+
+
+_RECIPE: str | None = None
+
+
+def recipe() -> str:
+    """
+    A hash of the files in assets/, of the functions that patch uBO and build
+    the companion, and of the constants they read. It changes when this
+    installer would build a different result from the same uBO release. The
+    install command records it and rebuilds when the recorded value differs, so
+    that an installed copy gets the changes made here. The built files contain
+    it too, so the companion's popup can tell whether Chrome is still running
+    the previous build.
+    """
+    global _RECIPE
+    if _RECIPE is None:
+        digest = hashlib.sha256()
+        for path in sorted(p for p in ASSETS.rglob("*") if p.is_file()):
+            digest.update(path.relative_to(ASSETS).as_posix().encode())
+            # CRLF is turned into LF first, so that the hash does not depend
+            # on the line endings Git checked the files out with.
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
+        digest.update(repr((RESIZE_MSG, FRAMES_SCRIPT, GUARD_OPEN_RULE)).encode())
+        try:
+            for function in (asset, read_json, write_json, require, patch_ubo,
+                             patch_scriptlet_injection, worker_file_name,
+                             build_version, build_companion):
+                digest.update(inspect.getsource(function).encode())
+        except (OSError, TypeError):
+            digest.update(Path(__file__).read_bytes().replace(b"\r\n", b"\n"))
+        _RECIPE = digest.hexdigest()[:16]
+    return _RECIPE
 
 
 # --- check ----------------------------------------------------------------
@@ -610,11 +822,10 @@ def check(
             ext / "popup-fenix.html",
             comp / "manifest.json",
             comp / "popup.js",
-            comp / "sw.js",
         )
         if not f.exists()
     ]
-    if len(missing) == 7:
+    if len(missing) == 6:
         info("Not installed.")
         return 1
     if missing:
@@ -651,14 +862,23 @@ def check(
         print("PROBLEMS FOUND")
         return 1
     popup_js = (comp / "popup.js").read_text(encoding="utf-8")
-    sw_js = (comp / "sw.js").read_text(encoding="utf-8")
+    # The companion's pages take uBO's ID from ubo.js.
+    pages_js = (comp / "ubo.js").read_text(encoding="utf-8") if (comp / "ubo.js").is_file() else ""
+    # The worker's file name contains a hash of its content; see
+    # worker_file_name().
+    worker_name = str((comp_manifest.get("background") or {}).get("service_worker") or "")
+    worker = comp / worker_name
+    worker_present = bool(worker_name) and worker.is_file()
+    sw_js = worker.read_text(encoding="utf-8") if worker_present else ""
 
     print("identity")
     row("uBO id", ubo_id)
     row("companion id", comp_id)
     print("cross-references")
-    row("companion popup.js", set(re.findall(r"chrome-extension://([a-p]{32})", popup_js)), {ubo_id})
-    row("companion sw.js", set(re.findall(r"'([a-p]{32})'", sw_js)), {ubo_id})
+    row("companion ubo.js id", set(re.findall(r"'([a-p]{32})'", pages_js)), {ubo_id})
+    row("companion worker file", worker_name if worker_present else "missing",
+        worker_file_name(sw_js) if worker_present else "present")
+    row("companion worker", set(re.findall(r"'([a-p]{32})'", sw_js)), {ubo_id})
     row("uBO externally_connectable", manifest.get("externally_connectable", {}).get("ids"), [comp_id])
     print("patches")
     launch = (manifest.get("app") or {}).get("launch") or {}
@@ -676,8 +896,8 @@ def check(
     )
     vapi = (ext / "js" / "vapi-background.js").read_text(encoding="utf-8")
     row(
-        "badge bridge",
-        "uboBadge" in vapi and "onMessageExternal" in vapi,
+        "companion bridge",
+        "ubo-lpa companion bridge" in vapi and "onMessageExternal" in vapi,
         True,
     )
     resize = ext / "js" / "popup-resize.js"
@@ -690,10 +910,23 @@ def check(
     row(
         "user scripts bridge",
         scripting.exists()
-        and "ubolpaUserScripts.codeFor(" in scripting.read_text(encoding="utf-8"),
+        and "ubolpaUserScripts.late(" in scripting.read_text(encoding="utf-8")
+        and "ubolpaTargets" in (ext / "js" / "scriptlet-filtering.js").read_text(encoding="utf-8"),
         True,
     )
     row("companion userScripts", "userScripts" in comp_manifest.get("permissions", []), True)
+    frames = ext / FRAMES_SCRIPT.lstrip("/")
+    row(
+        "content script for frames",
+        frames.is_file() and any(
+            FRAMES_SCRIPT in entry.get("js", []) and entry.get("match_origin_as_fallback") is True
+            for entry in manifest.get("content_scripts", [])
+        ),
+        True,
+    )
+    row("companion commands", sorted(comp_manifest.get("commands", {})),
+        sorted(manifest.get("commands", {})))
+    row("companion incognito", comp_manifest.get("incognito"), "split")
     row("popup-fenix web-accessible", "popup-fenix.html" in manifest.get("web_accessible_resources", []), True)
     row("popup-resize tag", "popup-resize.js" in (ext / "popup-fenix.html").read_text(encoding="utf-8"), True)
     row("browser_action kept", "browser_action" in manifest, True)
@@ -714,10 +947,16 @@ def check(
     scanned = [
         ext / "js" / "popup-resize.js",
         ext / "js" / "vapi-scripting.js",
+        ext / "js" / "vapi-background.js",
+        ext / "js" / "webext.js",
+        frames,
         ext / "manifest.json",
+        comp / "ubo.js",
         comp / "popup.js",
-        comp / "sw.js",
+        worker,
         comp / "popup.html",
+        comp / "wait.html",
+        comp / "wait.js",
         comp / "manifest.json",
     ]
     unresolved = []
@@ -761,7 +1000,7 @@ def check(
             except Exception:
                 derived = "unreadable"
         row(f"{label} id matches key", derived, want)
-    for name in ("popup.html", "popup.js", "sw.js", "manifest.json"):
+    for name in ("ubo.js", "popup.html", "popup.js", "wait.html", "wait.js", "manifest.json"):
         row(f"companion {name}", (comp / name).is_file(), True)
     row("popup origin guard", "e.origin !== UBO_ORIGIN" in popup_js, True)
     row("companion name", comp_manifest.get("name"))
@@ -865,6 +1104,19 @@ class Installer:
         comp_key, comp_id = ensure_key(self.root / "comp.pem")
         return ubo_id, comp_id, ubo_key, comp_key
 
+    def token(self) -> str:
+        """
+        The secret part of the event names in edits 8 and 9. uBO's injected
+        code, the registered scripts and js/ubolpa-frames.js exchange these
+        events in a page. The installer generates one token per install, keeps
+        it in the state file, and uses it at every rebuild.
+        """
+        token = self.state().get("token")
+        if not token:
+            token = "u" + secrets.token_hex(12)
+            self.save_state(token=token)
+        return str(token)
+
     # -- platform-specific delivery
     def deliver(self, ubo_id: str, comp_id: str, version: str, rebuilt: bool) -> int:
         """
@@ -957,23 +1209,33 @@ class Installer:
         installed = self.state().get("version")
 
         present = self.state_file.exists() and self.ext.is_dir() and self.comp.is_dir()
+        # True when another version of this installer, with other edits or
+        # another companion, built the installed copy. The recipe recorded at
+        # that build then differs from this version's.
+        rebuilt_differently = present and self.state().get("recipe") != recipe()
         # Only the files decide whether to rebuild. A profile without the
         # extensions is fixed by deliver() below, which runs on every install.
-        broken = present and check_quiet(self.root, ubo_id, comp_id, profiles=False) > 0
-        outdated = present and installed != tag
+        # check() looks for the files and markers that this version writes, so
+        # it runs only on a copy that this version built. A copy that another
+        # version built is rebuilt as an update and is not reported as
+        # inconsistent.
+        broken = (present and not rebuilt_differently
+                  and check_quiet(self.root, ubo_id, comp_id, profiles=False) > 0)
+        outdated = present and (installed != tag or rebuilt_differently)
 
         if installed and version_tuple(tag) < version_tuple(installed):
             # KNOWN_GOOD is fixed in this file, so when latest_release() finds
             # nothing, the fallback can offer a version older than the installed
             # one, and --ubo-zip can name an older release. That must not cause
-            # a downgrade. A broken install is still rebuilt from the version
-            # already recorded.
+            # a downgrade. A broken install, or one built by another version of
+            # this installer, is still rebuilt from the version already
+            # recorded.
             source = ("GitHub" if from_api
                       else f"{self.ubo_zip.name}" if self.ubo_zip is not None
                       else "The built-in release list")
             info(f"{source} offers {tag}, older than the installed {installed}.")
             tag = installed
-            outdated = False
+            outdated = rebuilt_differently
             # A rebuild then downloads the installed release; the zip holds
             # the older one.
             self.ubo_zip = None
@@ -987,8 +1249,10 @@ class Installer:
                 if not quiet and not ask("Repair it (re-download and rebuild)?", True):
                     info("No changes made.")
                     return 0
-            elif outdated:
+            elif installed != tag:
                 ok(f"Installed: uBO {installed}; {tag} is available.")
+            elif outdated:
+                ok(f"Installed: uBO {installed}, built by another version of ubo-lpa.")
             else:
                 ok(f"Installed: uBO {installed} (current)")
                 rebuild = not quiet and ask("Installation is already current. Reinstall?", False)
@@ -1000,7 +1264,7 @@ class Installer:
         self.save_state(ext_id=ubo_id, comp_id=comp_id)
         if rebuild:
             self._rebuild(tag, ubo_id, comp_id, ubo_key, comp_key)
-            self.save_state(version=tag)
+            self.save_state(version=tag, recipe=recipe())
         return self.deliver(ubo_id, comp_id, tag, rebuild)
 
     def _rebuild(self, tag: str, ubo_id: str, comp_id: str, ubo_key: str,
@@ -1014,7 +1278,7 @@ class Installer:
         staging.mkdir(parents=True)
         try:
             download_ubo(tag, staging / "extension", self.ubo_zip)
-            patch_ubo(staging / "extension", comp_id, ubo_key)
+            patch_ubo(staging / "extension", comp_id, ubo_key, self.token())
             build_companion(staging / "companion", ubo_id, staging / "extension", comp_key)
             if check_quiet(staging, ubo_id, comp_id, profiles=False,
                            keys_root=self.root) > 0:
@@ -1251,15 +1515,25 @@ class LinuxInstaller(Installer):
         ui["developer_mode"] = True
         changed |= touched_dev_mode
 
-        # An entry that is already correct stays as it is, including the copy
-        # of the manifest in it. Chrome reads an unpacked extension's manifest
-        # from disk at every start, and does not disable an unpacked extension
-        # whose new version asks for more permissions, so an update does not
-        # need to touch the entry.
+        # An entry that is already correct stays as it is, also after an
+        # update. Chrome reads an unpacked extension's manifest from disk at
+        # every start, and it does not disable an unpacked extension whose new
+        # version asks for more permissions.
+        added_companion = False
         for ext_id, ext_dir in ((ubo_id, self.ext), (comp_id, self.comp)):
             if entry_state(settings.get(ext_id), ext_dir) != "enabled":
                 settings[ext_id] = self._entry(ext_id, ext_dir)
                 changed = True
+                added_companion |= ext_id == comp_id
+
+        # Chrome keeps a new extension's button in the Extensions menu until
+        # the user pins it. The installer pins the companion's button when it
+        # writes the companion's entry, that is, when it adds the companion to
+        # the profile or repairs the entry. An update leaves the entry alone,
+        # so a button that the user unpinned stays unpinned.
+        pinned = prefs["extensions"].setdefault("pinned_extensions", [])
+        if added_companion and isinstance(pinned, list) and comp_id not in pinned:
+            pinned.append(comp_id)
 
         stock = settings.get(STOCK_UBO_ID)
         touched_stock = bool(stock) and stock.get("state") == 1
@@ -1277,6 +1551,19 @@ class LinuxInstaller(Installer):
         companion["user_scripts_enabled"] = True
         running = browser_running(profile.parent)
         if user_scripts_off and not running:
+            changed = True
+
+        # Chrome does not keep a manifest in the entry of an unpacked
+        # extension, but the entries that earlier versions of this installer
+        # wrote have one. Reload on chrome://extensions then uses that copy and
+        # not the file on disk, and after an update the copy points to a worker
+        # file that has been deleted. As with the pref above, the installer
+        # removes the copy only while Chrome is closed, and a copy alone does
+        # not make it report the profile as waiting for Chrome to close.
+        copies = [ext_id for ext_id in (ubo_id, comp_id) if "manifest" in settings[ext_id]]
+        for ext_id in copies:
+            del settings[ext_id]["manifest"]
+        if copies and not running:
             changed = True
 
         if not changed:
@@ -1327,7 +1614,6 @@ class LinuxInstaller(Installer):
             "incognito_preferences": {},
             "incognito": True,
             "location": 4,
-            "manifest": manifest,
             "path": str(ext_dir),
             "preferences": {},
             "regular_only_preferences": {},
@@ -1354,6 +1640,10 @@ class LinuxInstaller(Installer):
             settings = prefs.get("extensions", {}).get("settings", {})
             removed = [settings.pop(i, None) is not None for i in ids]
             changed = any(removed)
+            pinned = prefs.get("extensions", {}).get("pinned_extensions")
+            if isinstance(pinned, list) and ids & set(pinned):
+                pinned[:] = [i for i in pinned if i not in ids]
+                changed = True
             # Reverse the other two profile changes made during installation.
             journal = state.get("profiles", {}).get(str(profile), {})
             if journal.get("disabled_stock"):

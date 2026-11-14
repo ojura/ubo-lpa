@@ -44,9 +44,22 @@ uBlock Origin. Adding the `app` entry to its manifest is enough to make Chrome
 treat it as an LPA.
 
 The installer downloads uBlock Origin from its own releases, adds the `app` key,
-and patches the code paths where uBO assumes it is an extension. Chrome does not
-allow an LPA to provide a toolbar button, so the installer also builds a small
-companion extension that provides the button and displays uBO's panel.
+and patches the code paths where uBO assumes it is an extension. Chrome does
+not allow an LPA to have a toolbar button or keyboard shortcuts, so the
+installer also builds a small companion extension that has both. The
+companion's button shows uBO's count and state and opens uBO's panel. The
+companion also passes the shortcuts on to uBO.
+
+The companion is a Manifest V3 extension, so it can use `chrome.userScripts`,
+which a legacy packaged app cannot. For a site that has scriptlet filters of
+its own, the companion registers uBO's scriptlets as user scripts, so they run
+before the page's first script. On Chromium, uBO's own injection arrives after
+that script has run. That is too late for a scriptlet that has to empty an
+inline script before it runs, or wrap a function before the page saves a
+reference to it. uBO's filter lists use scriptlets of both kinds against
+Ad-Shield. On index.hr, a filter removes Ad-Shield's bootstrap script. That
+script still ran in 5 of 6 loads with uBO's own injection, and in 0 of 8 loads
+with the registered scripts (edit 8 in [WRITEUP.md](WRITEUP.md)).
 
 [WRITEUP.md](WRITEUP.md) describes the technical details and lists all edits
 performed by the installer.
@@ -73,11 +86,23 @@ it also:
   the companion extension
 - marks both extensions as allowed in incognito
 - grants the permissions declared in each manifest, without a prompt
-- turns on the companion's **Allow user scripts**, which lets uBO's main-world
-  scriptlets run before a page's own scripts (edit 8 in
-  [WRITEUP.md](WRITEUP.md))
+- turns on the companion's **Allow user scripts**, which lets uBO's scriptlets
+  run before a page's own scripts (edit 8 in [WRITEUP.md](WRITEUP.md))
+- pins the companion's button to the toolbar
 
 `uninstall` reverses the first two and removes both extensions.
+
+uBO's keyboard shortcuts are assigned at `chrome://extensions/shortcuts`, under
+"uBlock Origin toolbar button".
+
+Chrome loads the tabs it restores at launch before uBO has started, so their
+first requests are not filtered. The button marks such a tab with "!". To have
+those tabs wait for uBO instead, turn on **Suspend network activity until all
+filter lists are loaded** in uBO's Filter lists pane. The companion then holds
+the restored tabs until uBO filters requests, for at most ten seconds. It
+holds most other pages that open before then in the same way.
+[WRITEUP.md](WRITEUP.md#the-companion-extension) describes this launch guard
+and lists the pages it covers.
 
 ## Installation details
 
@@ -223,7 +248,7 @@ well, and is needed only once:
 4. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\companion`, or `companion`
    in that folder
 5. Open **Details** of "uBlock Origin toolbar button" and turn on **Allow user
-   scripts**, so uBO's main-world scriptlets run before the page's own scripts
+   scripts**, so uBO's scriptlets run before the page's own scripts
 
 Updates replace both folders in place, Chrome keeps the extensions loaded, and
 it loads the new version at its next start. `timer` registers a scheduled task,
@@ -260,11 +285,18 @@ WRITEUP.md          technical design, and why Windows needs Load unpacked
 ## End-to-end tests
 
 The browser harness tests the native Linux install, and the Windows install
-under Wine 11 or newer, each in a fresh Chrome profile. Both jobs check that uBO
-blocks requests, that the companion's popup shows uBO's panel and that an
-ordinary web page cannot frame the panel. They upload screenshots and logs even
-when a run fails. The Linux job also checks `uninstall`. The Wine job restarts
-Chrome to check that both extensions are still enabled.
+under Wine 11 or newer, each in a fresh Chrome profile. Both jobs check that
+uBO blocks requests, that the companion's popup shows uBO's panel, that the
+companion's button shows uBO's count, and that an ordinary web page cannot
+frame the panel. They also check that uBO runs a keyboard command sent from
+the companion, that a site's scriptlets run before the page scripts they act
+on, and that uBO's main-world scriptlet code runs exactly once in each
+document. They upload screenshots and logs even when a run fails. The Linux
+job also updates the install twice while Chrome runs, first to a changed
+companion and then back to the first one. After each update it restarts Chrome
+and checks that Chrome then runs the companion that is on disk. It also checks
+`uninstall`. The Wine job restarts Chrome to check that both extensions are
+still enabled.
 
 The Wine job installs the current WineHQ development build and loads both
 directories through **Load unpacked** and Chrome's Win32 folder picker, which is
@@ -290,6 +322,9 @@ notes.
 - **Compatibility is limited to tested Chrome releases.** A future release may
   extend MV2 enforcement to LPAs and make this approach inoperable.
 - **uBO appears under "Chrome Apps"**, not "Extensions".
+- **`chrome://apps` offers to remove it.** That page lists uBO as an unsupported
+  app, with a "Remove unsupported app" link. The link's dialog uninstalls uBO,
+  and the uninstall deletes uBO's settings.
 - **uBO is patched at install time.** The edits are listed in
   [WRITEUP.md](WRITEUP.md); `check` reports when one is missing.
 - **Keep the install directory.** It holds the private keys that determine

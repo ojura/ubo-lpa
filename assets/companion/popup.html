@@ -6,8 +6,19 @@
    iframe is resized. 252px = uBO's --popup-main-min-width (18em at 14px). */
 html,body{margin:0;padding:0;overflow:hidden;width:max-content}
 iframe{border:0;display:block;width:252px;height:400px}
+/* The notices take the panel's width instead of widening the popup. */
+#notices{width:0;min-width:100%;box-sizing:border-box;color-scheme:light dark;
+  font:12px/1.35 system-ui,sans-serif;background:Canvas;color:CanvasText}
+#notices p{margin:0;padding:6px 8px;border-bottom:1px solid GrayText}
+#notices button{display:block;margin-top:4px;font:inherit}
+/* While uBO's panel cannot be loaded, the popup hides the panel's frame and
+   shows only the notice that says why, at the panel's minimum width. */
+body.waiting{width:252px}
+body.waiting iframe{display:none}
 </style>
 </head><body>
+<div id="notices"></div>
 <iframe id="ubo" scrolling="no"></iframe>
+<script src="ubo.js"></script>
 <script src="popup.js"></script>
 </body></html>

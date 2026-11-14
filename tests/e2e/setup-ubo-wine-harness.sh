@@ -622,13 +622,28 @@ class Fixtures(http.server.BaseHTTPRequestHandler):
                 ".then(()=>status.textContent='request completed')"
                 ".catch(()=>status.textContent='request failed');</script>")
         elif path == "/early":
-            # The document's first script records whether uBO's scriptlet has
-            # already run. An anti-adblock loader in <head> runs as early, and a
-            # scriptlet that runs after it comes too late.
+            # The document's first script records whether uBO's main-world
+            # scriptlet has already run. An anti-adblock loader in <head> runs
+            # as early, and a scriptlet that runs after it comes too late. The
+            # remove-node-text scriptlet has to empty the second script before
+            # it runs. The third script creates an empty iframe and at once
+            # reads a value from the iframe's window, where a page would look
+            # for functions that uBO has not wrapped. It then writes the
+            # iframe's document, as advertising code does. Calling
+            # document.open() removes the listeners on the frame's window,
+            # among them the one that cancels the presence event. uBO's own
+            # injection arrives later and still has to detect that the
+            # scriptlets ran in the frame.
             self._send(
                 "<!doctype html><script>window.__early = typeof window.uboLpaEarly;"
-                "</script><meta charset=utf-8><title>scriptlet timing</title>"
-                "<p>Scriptlet timing fixture</p>")
+                "</script><script>/*UBOLPA_REMOVE*/window.__removedRan = true;</script>"
+                "<meta charset=utf-8><title>scriptlet timing</title>"
+                "<p>Scriptlet timing fixture</p>"
+                "<script>const f = document.createElement('iframe');"
+                "document.body.appendChild(f);"
+                "window.__frame = typeof f.contentWindow.uboLpaEarly;"
+                "f.contentDocument.open();f.contentDocument.write('<p>written</p>');"
+                "f.contentDocument.close();</script>")
         elif path == "/canary":
             Fixtures.canary_hits += 1
             self.send_response(204)
@@ -1012,52 +1027,301 @@ def bridge_message(cdp: Cdp, companion: str, tab_id: int) -> dict:
       }})"""))
 
 
-def check_scriptlet_timing(cdp: Cdp, port: int) -> None:
+def load_counting_main_runs(cdp: Cdp, page: str, url: str) -> dict:
     """
-    Edit 8: once the companion has registered a site's scriptlets with
-    chrome.userScripts, they run before the page's first inline script. The
-    first load registers them. A filter list update in the fresh profile can
-    reset uBO's scriptlets, and the next load registers them again, so several
-    loads are tried.
+    Load the scriptlet fixture, and return what its scripts recorded and
+    whether uBO's main-world scriptlet ran at all. The result also has
+    mainRuns, the number of times uBO's main-world scriptlet code ran in each
+    of the fixture's two documents: the page and the empty iframe that the
+    page creates. The count comes from the debugger, which reports every
+    script that Chrome compiles for the page. Three of those scripts can
+    contain the main-world code: the registered user script, the inline
+    script that uBO's content script inserts into the iframe, and the inline
+    script that uBO appends when it injects the code itself.
+    """
+    cdp.drain()
+    cdp.events.clear()
+    cdp.send("Page.navigate", {"url": url}, page, timeout=60)
+    deadline = time.time() + 20
+    state: dict = {}
+    while time.time() < deadline:
+        cdp.drain()
+        try:
+            state = json.loads(cdp.evaluate(page, """
+              JSON.stringify({early: window.__early, removed: window.__removedRan === true,
+                              frame: window.__frame, later: typeof window.uboLpaEarly,
+                              ready: document.readyState})"""))
+        except ProbeError:
+            state = {}
+        if state.get("later") == "boolean" and state.get("ready") == "complete":
+            break
+        time.sleep(0.25)
+    # uBO's own injection arrives a moment after the page has loaded.
+    time.sleep(1.5)
+    cdp.drain()
+    runs: dict = {}
+    for event in cdp.events:
+        if event.get("method") != "Debugger.scriptParsed" or event.get("sessionId") != page:
+            continue
+        try:
+            source = cdp.send("Debugger.getScriptSource",
+                              {"scriptId": event["params"]["scriptId"]}, page,
+                              timeout=10).get("scriptSource", "")
+        except ProbeError:
+            continue
+        # The code uBO injects into its own isolated world holds the main-world
+        # code as a string, without running it there.
+        if "uBO_mainWorldScriptlets" in source and "uBO_isolatedWorldWrapper" not in source:
+            context = event["params"].get("executionContextId")
+            runs[context] = runs.get(context, 0) + 1
+    state["mainRuns"] = sorted(runs.values())
+    return state
+
+
+def check_scriptlets(cdp: Cdp, port: int) -> None:
+    """
+    Check edits 8 and 9. The companion has to register the site's main-world
+    and isolated-world scripts with chrome.userScripts. The main-world
+    scriptlet then has to run before the page's first inline script, and the
+    isolated-world remove-node-text scriptlet has to empty the second script
+    before it runs. A new empty iframe has to have the main-world scriptlet
+    before the script that created it continues. In every load, the
+    main-world code has to run exactly once in each of the two documents, so
+    uBO's own injection must not run it a second time. The first load
+    registers the scriptlets. A filter list update in the fresh profile can
+    reset uBO's scriptlets, and the next load registers them again, so the
+    fixture is loaded at least twice and up to eight times.
     """
     # The earlier companion and dashboard tabs may be closed by now.
-    companion = cdp.new_page(f"chrome-extension://{COMPANION_ID}/popup.html")
-    dashboard = cdp.new_page(f"chrome-extension://{UBO_ID}/dashboard.html")
+    companion = cdp.new_page()
+    cdp.navigate(companion, f"chrome-extension://{COMPANION_ID}/popup.html")
+    dashboard = cdp.new_page()
+    cdp.navigate(dashboard, f"chrome-extension://{UBO_ID}/dashboard.html")
     wait_for_ubo_ready(cdp, dashboard)
     available = cdp.evaluate(companion, "typeof chrome.userScripts")
     log(f"COMPANION_USER_SCRIPTS {available}")
     if available != "object":
-        if os.environ.get("EXPECT_WINDOWS", "1") == "1":
-            # "Allow user scripts" is a manual step on Windows.
-            return
         raise ProbeError("the companion has no chrome.userScripts")
     background_call(cdp, dashboard, """
       const ub = background.MU_Block;
       ub.applyFilterListSelection({ toSelect: [ ub.userFiltersPath ], merge: true });
-      ub.saveUserFilters('127.0.0.1##+js(set, uboLpaEarly, true)\\n')
+      ub.saveUserFilters('127.0.0.1##+js(set, uboLpaEarly, true)\\n' +
+                         '127.0.0.1##+js(rmnt, script, UBOLPA_REMOVE)\\n')
         .then(() => ub.loadFilterLists())
         .then(() => resolve(true), reject);""")
     page = cdp.new_page()
+    cdp.send("Page.enable", {}, page)
+    cdp.send("Debugger.enable", {}, page)
+    url = f"http://127.0.0.1:{port}/early"
+
+    def registered() -> list:
+        return cdp.evaluate(
+            companion, "chrome.userScripts.getScripts().then(s => s.map(x => x.id))") or []
+
+    def early(state: dict) -> bool:
+        return (state.get("early") == "boolean" and state.get("removed") is False
+                and state.get("frame") == "boolean")
+
     seen = []
     for _ in range(8):
-        cdp.navigate(page, f"http://127.0.0.1:{port}/early")
-        seen.append(cdp.evaluate(page, "window.__early"))
-        if len(seen) > 1 and seen[-1] == "boolean":
+        seen.append(load_counting_main_runs(cdp, page, url))
+        if len(seen) > 1 and early(seen[-1]):
             break
         time.sleep(2)
-    log(f"SCRIPTLET_TIMING {json.dumps(seen)}")
+    ids = registered()
+    log(f"SCRIPTLETS {json.dumps(seen)}")
+    log(f"USER_SCRIPTS {json.dumps(ids)}")
+    if "main:127.0.0.1" not in ids or "isolated:127.0.0.1" not in ids:
+        raise ProbeError("the companion did not register the site's scriptlets")
+    if len(seen) < 2 or seen[-1].get("early") != "boolean":
+        raise ProbeError("uBO's main-world scriptlet did not run before the page's first script")
+    if seen[-1].get("removed") is not False:
+        raise ProbeError("uBO's remove-node-text scriptlet did not empty the page's second "
+                         "script before it ran")
+    if seen[-1].get("frame") != "boolean":
+        raise ProbeError("uBO's main-world scriptlet had not run in a new empty iframe when "
+                         "the script that created it continued")
+    if any(state.get("mainRuns") != [1, 1] for state in seen):
+        raise ProbeError("in at least one load, uBO's main-world scriptlet code did not run "
+                         "exactly once in the page and once in its iframe")
+
+    # uBO runs a second instance for incognito windows. Starting it must
+    # leave the regular windows' scriptlets registered. Only the Linux run
+    # checks this, because the Windows run does not allow the extensions in
+    # incognito.
+    if os.environ.get("EXPECT_WINDOWS", "1") != "1":
+        def instances() -> int:
+            return sum(1 for t in cdp.send("Target.getTargets")["targetInfos"]
+                       if t["type"] == "background_page" and UBO_ID in t["url"])
+        before = {t["targetId"] for t in cdp.send("Target.getTargets")["targetInfos"]}
+        background_call(cdp, dashboard, """
+          background.chrome.windows.create({ incognito: true, url: 'about:blank' });
+          resolve(true);""")
+        for _ in range(60):
+            if instances() == 2:
+                break
+            time.sleep(0.5)
+        else:
+            raise ProbeError("uBO's incognito instance did not start")
+        time.sleep(3)
+        state = load_counting_main_runs(cdp, page, url)
+        ids = registered()
+        log(f"SCRIPTLETS_AFTER_INCOGNITO {json.dumps(state)} {json.dumps(ids)}")
+        if "main:127.0.0.1" not in ids or not early(state) or state.get("mainRuns") != [1, 1]:
+            raise ProbeError("after an incognito window opened, the site's scriptlets were not "
+                             "registered, did not run early, or did not run exactly once in "
+                             "each document")
+        for target in cdp.send("Target.getTargets")["targetInfos"]:
+            if target["type"] == "page" and target["targetId"] not in before:
+                try:
+                    cdp.send("Target.closeTarget", {"targetId": target["targetId"]}, timeout=10)
+                except ProbeError:
+                    pass
+
+    # uBO's injected code runs every part that a registered script did not
+    # run. With the registrations removed without uBO's knowledge, uBO's own
+    # injection has to run the main-world scriptlet once in each document,
+    # after the page's first script.
+    cdp.evaluate(companion, "chrome.userScripts.unregister().then(() => true)")
+    state = load_counting_main_runs(cdp, page, url)
+    log(f"SCRIPTLETS_UNREGISTERED {json.dumps(state)}")
+    if state.get("later") != "boolean" or state.get("mainRuns") != [1, 1]:
+        raise ProbeError("with the registrations removed, uBO's own injection did not run the "
+                         "main-world scriptlet code exactly once in the page and once in its "
+                         "iframe")
     cdp.close_page(page)
-    # A fast local page can also lose the race to tabs.executeScript, so
-    # the timing alone does not show that the user script ran.
-    registered = cdp.evaluate(
-        companion, "chrome.userScripts.getScripts().then(s => s.map(x => x.id))")
-    log(f"USER_SCRIPTS {json.dumps(registered)}")
     cdp.close_page(dashboard)
     cdp.close_page(companion)
-    if "site:127.0.0.1" not in (registered or []):
-        raise ProbeError("the companion did not register the site's scriptlets")
-    if seen[-1] != "boolean" or len(seen) < 2:
-        raise ProbeError("uBO's scriptlet did not run before the page's first script")
+
+
+def check_launch_guard(cdp: Cdp, port: int) -> None:
+    """
+    Check the launch guard. While uBO's setting "Suspend network activity
+    until all filter lists are loaded" is on, the companion keeps a rule that
+    redirects every page to its wait.html. A session rule switches the
+    redirect off once uBO's request listener is installed, or once wait.html
+    stops waiting after ten seconds. Chrome drops session rules when it
+    exits, and the probe removes the session rule in place of a restart. The
+    next page then has to pass through wait.html and load.
+    """
+    companion = cdp.new_page()
+    cdp.navigate(companion, f"chrome-extension://{COMPANION_ID}/popup.html")
+    dashboard = cdp.new_page()
+    cdp.navigate(dashboard, f"chrome-extension://{UBO_ID}/dashboard.html")
+    wait_for_ubo_ready(cdp, dashboard)
+
+    def rules() -> list:
+        return json.loads(cdp.evaluate(companion, """
+          Promise.all([chrome.declarativeNetRequest.getDynamicRules(),
+                       chrome.declarativeNetRequest.getSessionRules()])
+            .then(a => JSON.stringify(a.map(list => list.map(rule => rule.id))))"""))
+
+    def setting(value: bool) -> None:
+        background_call(cdp, dashboard, f"""
+          background.MU_Block.changeUserSettings(
+            'suspendUntilListsAreLoaded', {json.dumps(value)});
+          resolve(true);""")
+
+    def guard_becomes(wanted: list, page: str) -> None:
+        # uBO includes the setting in each toolbar message, and loading a page
+        # makes uBO send one.
+        for attempt in range(20):
+            cdp.navigate(page, f"http://127.0.0.1:{port}/block?guard={attempt}")
+            for _ in range(8):
+                if rules()[0] == wanted:
+                    return
+                time.sleep(0.5)
+        raise ProbeError("the companion did not add the launch guard's rule" if wanted
+                         else "the companion did not remove the launch guard's rule")
+
+    if rules()[0]:
+        raise ProbeError("the launch guard is on while uBO's setting is off")
+    page = cdp.new_page()
+    setting(True)
+    guard_becomes([1], page)
+    cdp.evaluate(companion, """
+      chrome.declarativeNetRequest.updateSessionRules({removeRuleIds: [2]}).then(() => true)""")
+    cdp.send("Page.enable", {}, page)
+    cdp.drain()
+    cdp.events.clear()
+    target = f"http://127.0.0.1:{port}/block?guarded=1"
+    cdp.send("Page.navigate", {"url": target}, page, timeout=60)
+    for _ in range(80):
+        cdp.drain()
+        if cdp.url_of(page) == target:
+            break
+        time.sleep(0.25)
+    else:
+        raise ProbeError("the page did not load while the launch guard was on")
+    cdp.drain()
+    visited = [event["params"]["frame"]["url"] for event in cdp.events
+               if event.get("method") == "Page.frameNavigated"
+               and not event["params"]["frame"].get("parentId")]
+    after = rules()
+    log(f"LAUNCH_GUARD visited={json.dumps(visited)} rules={json.dumps(after)}")
+    if not any(f"{COMPANION_ID}/wait.html" in url for url in visited):
+        raise ProbeError("the page did not pass through wait.html")
+    if after != [[1], [2]]:
+        raise ProbeError("after the wait page, the companion's rules are not exactly the "
+                         "guard's rule and the session rule that switches the guard off")
+    setting(False)
+    guard_becomes([], page)
+    cdp.close_page(page)
+    cdp.close_page(dashboard)
+    cdp.close_page(companion)
+
+
+def check_commands(cdp: Cdp, extensions: str, companion: str, site: str) -> None:
+    """
+    The companion declares uBO's keyboard commands and passes each one on to
+    uBO. Here a companion page sends uBO the message that the companion's
+    worker sends for a key press. The Linux run then assigns a shortcut with
+    the call that chrome://extensions/shortcuts makes, and presses it, so that
+    the command goes through the worker.
+    """
+    def logger_pages() -> list:
+        return [t for t in cdp.targets() if f"{UBO_ID}/logger-ui.html" in t.get("url", "")]
+
+    def expect_logger(how: str) -> None:
+        for _ in range(40):
+            pages = logger_pages()
+            if pages:
+                break
+            time.sleep(0.5)
+        else:
+            raise ProbeError(f"uBO did not open its logger for the command {how}")
+        for target in pages:
+            try:
+                cdp.send("Target.closeTarget", {"targetId": target["id"]}, timeout=10)
+            except ProbeError:
+                pass
+        for _ in range(20):
+            if not logger_pages():
+                break
+            time.sleep(0.25)
+
+    commands = cdp.evaluate(companion, "chrome.commands.getAll().then(c => c.map(x => x.name))")
+    log(f"COMMANDS {json.dumps(commands)}")
+    if "launch-logger" not in (commands or []):
+        raise ProbeError("the companion does not declare uBO's keyboard commands")
+    cdp.evaluate(companion, f"""
+      new Promise(resolve => chrome.runtime.sendMessage(
+        '{UBO_ID}', {{what: 'command', command: 'launch-logger'}}, () => {{
+          void chrome.runtime.lastError; resolve(true); }}))""")
+    expect_logger("sent from a companion page")
+    if os.environ.get("EXPECT_WINDOWS", "1") != "1":
+        cdp.evaluate(extensions, f"""
+          chrome.developerPrivate.updateExtensionCommand(
+            {{extensionId: '{COMPANION_ID}', commandName: 'launch-logger',
+              keybinding: 'Alt+Shift+L'}})""")
+        cdp.bring_to_front(site)
+        time.sleep(1)
+        xdo("mousemove", "400", "500", "click", "1")
+        time.sleep(0.5)
+        xdo("key", "alt+shift+l")
+        expect_logger("sent by a key press")
+        log("COMMAND_KEY ok")
+    cdp.bring_to_front(companion)
 
 
 def tab_id_for(cdp: Cdp, companion: str, url_prefix: str) -> int:
@@ -1073,9 +1337,18 @@ def tab_id_for(cdp: Cdp, companion: str, url_prefix: str) -> int:
     return value
 
 
-def frame_targets(cdp: Cdp, url_fragment: str) -> list[dict]:
+def frame_targets(cdp: Cdp, parent: str, url_fragment: str) -> list[dict]:
+    """
+    Return the out-of-process frames of one page whose address contains
+    url_fragment. Chrome lists a frame it blocked under the address that was
+    requested, so the frame of uBO's panel in the hostile page has the same
+    address as the one in the companion's popup. Their parentId tells them
+    apart.
+    """
+    parent_id = cdp.target_for(parent)
     return [t for t in cdp.targets()
-            if t["type"] == "iframe" and url_fragment in t.get("url", "")]
+            if t["type"] == "iframe" and url_fragment in t.get("url", "")
+            and t.get("parentId", parent_id) == parent_id]
 
 
 class Frame:
@@ -1107,7 +1380,7 @@ def find_frame(cdp: Cdp, parent: str, url_fragment: str, timeout: float = 45.0) 
     cdp.send("Runtime.enable", {}, parent)
     while time.time() < deadline:
         # An out-of-process frame, which the panel is with site isolation on.
-        for target in frame_targets(cdp, url_fragment):
+        for target in frame_targets(cdp, parent, url_fragment):
             if not target["url"].startswith("chrome-error://"):
                 return Frame(cdp, cdp.attach(target["id"]))
         # Otherwise the frame is an execution context in the parent target.
@@ -1180,6 +1453,11 @@ def install_phase(cdp: Cdp) -> None:
         desktop_shot("00-install-incomplete")
         raise ProbeError("Load unpacked did not install both extensions")
     check_extension_diagnostics(cdp, session, require_expected_warnings=True)
+    # Loading by hand ends with turning on "Allow user scripts" on the
+    # companion's details page. The toggle there makes this call.
+    cdp.evaluate(session, f"""
+      chrome.developerPrivate.updateExtensionConfiguration(
+        {{extensionId: '{COMPANION_ID}', userScriptsAccess: true}})""")
     try:
         capture(cdp, session, "10-windows-load-unpacked-complete")
     except ProbeError:
@@ -1199,6 +1477,37 @@ def test_phase(cdp: Cdp) -> None:
             raise ProbeError("Windows user agent missing")
 
     session = open_extensions(cdp, first_page(cdp))
+
+    # The Linux run starts this Chrome with the companion's popup page open in
+    # a tab. The updated worker has to take over even with that page open, and
+    # the build comparison below checks that. The page loaded before uBO's
+    # background page existed, and it still has to show uBO's panel once uBO
+    # runs. A panel that loads too early shuts itself down and stays empty.
+    # Afterwards the page is closed, because a later step looks for the toolbar
+    # button's popup, which has the same address. The extensions page is open
+    # in another tab by then, so the window stays open.
+    left_open = [target for target in cdp.targets()
+                 if target.get("type") == "page" and f"{COMPANION_ID}/" in target.get("url", "")]
+    if os.environ.get("EXPECT_WINDOWS", "1") != "1":
+        if len(left_open) != 1:
+            raise ProbeError("Chrome does not have exactly one companion page open, the popup "
+                             "page it was started with")
+        early = cdp.attach(left_open[0]["id"])
+        cdp.bring_to_front(early)
+        panel = find_frame(cdp, early, "popup-fenix.html")
+        for _ in range(120):
+            if panel.evaluate("!!document.getElementById('switch') && typeof vAPI === 'object'"):
+                break
+            time.sleep(0.5)
+        else:
+            raise ProbeError("uBO's panel did not load in the page Chrome was started with")
+        log("PANEL_IN_PAGE_OPEN_AT_START ok")
+        cdp.bring_to_front(session)
+    for target in left_open:
+        try:
+            cdp.send("Target.closeTarget", {"targetId": target["id"]}, timeout=10)
+        except ProbeError:
+            pass
 
     # One read is normally sufficient. On a resource-constrained host (one CPU,
     # swapping, and uBO recompiling filter lists at startup), the WebUI can
@@ -1226,6 +1535,16 @@ def test_phase(cdp: Cdp) -> None:
     check_extension_diagnostics(
         cdp, session,
         require_expected_warnings=os.environ.get("EXPECT_WINDOWS", "1") == "1")
+    # The Linux installer pins the button when it adds the companion to a
+    # profile. Loading by hand, as the Windows run does, leaves the button in
+    # the Extensions menu.
+    if os.environ.get("EXPECT_WINDOWS", "1") != "1":
+        pinned = cdp.evaluate(session, f"""
+          chrome.developerPrivate.getExtensionsInfo().then(list =>
+            (list.find(e => e.id === '{COMPANION_ID}') || {{}}).pinnedToToolbar)""")
+        log(f"PINNED {json.dumps(pinned)}")
+        if pinned is not True:
+            raise ProbeError("the companion's button is not pinned to the toolbar")
 
     # The manifest's CSP must have exactly one frame-ancestors directive, which
     # allows 'self' and the companion.
@@ -1308,8 +1627,49 @@ def test_phase(cdp: Cdp) -> None:
         raise ProbeError(f"advertising canary reached the server {Fixtures.canary_hits} time(s)")
     if not (badge.get("ok") and badge.get("ready") and badge.get("netFiltering")
             and badge.get("pageBlocked", 0) >= 1):
-        raise ProbeError("uBO's badge bridge did not report the request as blocked")
+        raise ProbeError("uBO's companion bridge did not report the request as blocked")
     capture(cdp, companion, "40-companion-popup-document-in-tab", 1.5)
+
+    # The worker and uBO's background page have to report the build that is
+    # on disk. Chrome loaded both at its start, and it reads the popup's files
+    # from disk when the popup opens. The popup compares the builds that the
+    # two report with its own, and shows the notice "uBlock Origin was
+    # updated" when one differs. After an update, the builds differ until
+    # Chrome restarts.
+    builds = json.loads(cdp.evaluate(companion, f"""
+      Promise.all([
+        chrome.runtime.sendMessage({{what: 'build'}}),
+        new Promise(resolve => chrome.runtime.sendMessage(
+          '{UBO_ID}', {{what: 'uboBadge'}},
+          r => resolve(chrome.runtime.lastError ? null : r.build))),
+      ]).then(a => JSON.stringify({{
+        worker: a[0], ubo: a[1],
+        notices: document.getElementById('notices').innerText}}))"""))
+    log(f"BUILD {json.dumps(builds)}")
+    if (not builds["worker"] or builds["worker"] != builds["ubo"]
+            or "uBlock Origin was updated" in builds["notices"]):
+        raise ProbeError("Chrome is not running the build that is on disk")
+    if builds["notices"]:
+        raise ProbeError(f"the popup shows an unexpected notice: {builds['notices']!r}")
+
+    # The button has to show uBO's count of blocked requests for the tab, as
+    # its badge and in its title.
+    toolbar: list = []
+    for _ in range(40):
+        blocked = str(bridge_message(cdp, companion, site_tab).get("pageBlocked"))
+        toolbar = json.loads(cdp.evaluate(companion, f"""
+          Promise.all([chrome.action.getBadgeText({{tabId: {site_tab}}}),
+                       chrome.action.getTitle({{tabId: {site_tab}}})])
+            .then(a => JSON.stringify(a))"""))
+        if toolbar == [blocked, f"uBlock Origin ({blocked})"]:
+            break
+        time.sleep(0.5)
+    else:
+        log(f"TOOLBAR_STATE {json.dumps(toolbar)}")
+        raise ProbeError("the toolbar button does not show uBO's count for the tab")
+    log(f"TOOLBAR_STATE {json.dumps(toolbar)}")
+
+    check_commands(cdp, session, companion, site)
 
     # showIconBadge is honoured by the bridge.
     original = set_show_badge(cdp, dashboard, False)
@@ -1318,7 +1678,7 @@ def test_phase(cdp: Cdp) -> None:
     set_show_badge(cdp, dashboard, original)
     log(f"SHOW_BADGE_FALSE response={json.dumps(badge_off)} restored={json.dumps(original)}")
     if badge_off.get("showBadge") is not False:
-        raise ProbeError("badge bridge ignored showIconBadge=false")
+        raise ProbeError("the companion bridge ignored showIconBadge=false")
 
     # frame-ancestors: an ordinary HTTP origin must not be able to frame uBO's
     # popup.
@@ -1395,9 +1755,11 @@ def test_phase(cdp: Cdp) -> None:
     time.sleep(2)
     desktop_shot("55-toolbar-action-popup")
 
-    # Last, because it opens and closes a tab, which can leave Chrome
-    # without a focused window for openPopup().
-    check_scriptlet_timing(cdp, port)
+    # The scriptlet check runs after the popup checks. It opens and closes
+    # tabs, and that can leave Chrome without a focused window for
+    # openPopup().
+    check_scriptlets(cdp, port)
+    check_launch_guard(cdp, port)
 
     (OUT_DIR / "targets-final.json").write_text(
         json.dumps(cdp.targets(), indent=2), encoding="utf-8")
@@ -1974,9 +2336,6 @@ if ((LINUX_MODE)); then
         "$WORK_DIR/ubo-lpa/.state.json")
     note "Linux IDs: uBO=$UBO_ID companion=$COMPANION_ID"
 
-    rm -f -- "$LINUX_PROFILE"/Singleton* "$LINUX_PROFILE"/DevToolsActivePort
-    CDP_PORT=$("$PYTHON_CMD" -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()")
-
     # Chrome runs in a window, not headless: the probe records whole-screen
     # captures of the browser, and a headless browser does not render to the
     # display. The same fresh profile is used for the whole test.
@@ -1988,55 +2347,126 @@ if ((LINUX_MODE)); then
     # window on that desktop, even with WAYLAND_DISPLAY unset, because
     # libwayland then connects to wayland-0. The screenshots would be black,
     # and openPopup() would fail whenever that window does not have focus.
-    env -u XDG_CONFIG_HOME "$CHROME_BIN" --user-data-dir="$LINUX_PROFILE" \
-        --ozone-platform=x11 \
-        --no-first-run --no-default-browser-check --disable-gpu --no-sandbox \
-        --disable-component-update --disable-features=SpareRendererForSitePerProcess \
-        --window-position=20,20 --window-size=1240,820 --force-device-scale-factor=1 \
-        --remote-debugging-address=127.0.0.1 --remote-debugging-port=$CDP_PORT \
-        about:blank >"$LOG_DIR/chrome-linux-session.log" 2>&1 &
-    CHROME_PID=$!
+    # --host-resolver-rules maps the advertising host that the probe requests
+    # to 127.0.0.1, so the request reaches the probe's server whenever uBO
+    # does not block it. $1 is the page to open.
+    start_linux_chrome() {
+        rm -f -- "$LINUX_PROFILE"/Singleton* "$LINUX_PROFILE"/DevToolsActivePort
+        CDP_PORT=$("$PYTHON_CMD" -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()")
+        env -u XDG_CONFIG_HOME "$CHROME_BIN" --user-data-dir="$LINUX_PROFILE" \
+            --ozone-platform=x11 \
+            --no-first-run --no-default-browser-check --disable-gpu --no-sandbox \
+            --disable-component-update --disable-features=SpareRendererForSitePerProcess \
+            --window-position=20,20 --window-size=1240,820 --force-device-scale-factor=1 \
+            --remote-debugging-address=127.0.0.1 --remote-debugging-port=$CDP_PORT \
+            '--host-resolver-rules=MAP pagead2.googlesyndication.com 127.0.0.1' \
+            "$1" >>"$LOG_DIR/chrome-linux-session.log" 2>&1 &
+        CHROME_PID=$!
 
-    # Poll the endpoint rather than DevToolsActivePort: uBO compiles its filter
-    # lists during startup, and the browser can take a while to answer.
-    CDP_READY=0
-    for _ in $(seq 1 180); do
-        if curl -fsS --max-time 2 "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1; then
-            CDP_READY=1
-            break
-        fi
-        kill -0 "$CHROME_PID" 2>/dev/null || die 'Chrome exited before exposing CDP'
-        sleep 1
-    done
-    ((CDP_READY)) || die 'Chrome did not expose a CDP port'
-    export CDP_ENDPOINT=http://127.0.0.1:$CDP_PORT
+        # Poll the endpoint rather than DevToolsActivePort: uBO compiles its
+        # filter lists during startup, and the browser can take a while to
+        # answer.
+        CDP_READY=0
+        for _ in $(seq 1 180); do
+            if curl -fsS --max-time 2 "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1; then
+                CDP_READY=1
+                break
+            fi
+            kill -0 "$CHROME_PID" 2>/dev/null || die 'Chrome exited before exposing CDP'
+            sleep 1
+        done
+        ((CDP_READY)) || die 'Chrome did not expose a CDP port'
+        export CDP_ENDPOINT=http://127.0.0.1:$CDP_PORT
+        note "Linux Chrome CDP at $CDP_ENDPOINT"
+    }
+
+    stop_linux_chrome() {
+        kill "$CHROME_PID" >/dev/null 2>&1 || true
+        reap_pid_bounded "$CHROME_PID"
+        CHROME_PID=
+        for _ in $(seq 1 60); do
+            profile_in_use "$LINUX_PROFILE" || break
+            sleep 1
+        done
+    }
+
+    start_linux_chrome about:blank
     export OUT_DIR SCREENSHOT_DIR=$OUT_DIR
     export UBO_ID COMPANION_ID
     export EXT_HOST=$WORK_DIR/ubo-lpa/extension
     export EXPECT_WINDOWS=0
-    note "Linux Chrome CDP at $CDP_ENDPOINT"
 
     # An update has to work while Chrome is running: it replaces the files and
-    # leaves Preferences alone. Writing version 0.0.0 into the state file makes
-    # install rebuild now, and the probe below then runs against the new files.
-    note 'Updating the install while Chrome is running.'
-    "$PYTHON_CMD" - "$WORK_DIR/ubo-lpa/.state.json" <<'PY'
-import json
-import sys
+    # leaves Preferences alone. Chrome stores the companion's worker script
+    # when it registers the worker, and runs the stored script from then on.
+    # It runs an updated worker only when the update gives the worker a new
+    # file name and the extension a new version (worker_file_name() and
+    # build_version() in ubo-lpa.py). Here a change to sw.js in the copied
+    # project stands for a newer ubo-lpa, and restoring sw.js stands for a
+    # return to the earlier one. After each update Chrome has to run the
+    # worker that is on disk. After the first update Chrome usually still has
+    # the first build's version on record. If the version were derived from
+    # the worker's content, the returning build would get that version back,
+    # and Chrome would not register it.
+    worker_on_disk() {
+        "$PYTHON_CMD" -c "import json,sys; print(json.load(open(sys.argv[1]))['background']['service_worker'])" \
+            "$WORK_DIR/ubo-lpa/companion/manifest.json"
+    }
+    wait_for_worker() {
+        local worker i
+        worker=$(worker_on_disk)
+        for i in $(seq 1 120); do
+            if curl -fsS --max-time 2 "http://127.0.0.1:$CDP_PORT/json/list" 2>/dev/null \
+                    | grep -q "chrome-extension://$COMPANION_ID/$worker"; then
+                note "Chrome runs the companion worker $worker."
+                return 0
+            fi
+            sleep 1
+        done
+        die "Chrome did not start the companion worker $worker"
+    }
+    update_while_running() {
+        local log=$LOG_DIR/$1 before
+        before=$(worker_on_disk)
+        "$PYTHON_CMD" "$PROJECT_SCRIPT" install --non-interactive \
+            --dir "$WORK_DIR/ubo-lpa" 2>&1 | tee "$log"
+        grep -q 'built by another version of ubo-lpa' "$log" \
+            || die 'install did not report that another ubo-lpa version built the installed copy'
+        grep -q 'Chrome is running and loads uBO' "$log" \
+            || die 'install did not rebuild while Chrome was running'
+        ! grep -q 'Injected into' "$log" \
+            || die 'install edited Preferences while Chrome was running'
+        [[ $(worker_on_disk) != "$before" ]] \
+            || die 'the rebuilt worker kept the file name of the previous worker'
+    }
+    WORKER_SOURCE=$(dirname -- "$PROJECT_SCRIPT")/assets/companion/sw.js
+    cp -- "$WORKER_SOURCE" "$WORK_DIR/sw.js.first"
 
-path = sys.argv[1]
-with open(path) as handle:
-    state = json.load(handle)
-state["version"] = "0.0.0"
-with open(path, "w") as handle:
-    json.dump(state, handle)
-PY
-    "$PYTHON_CMD" "$PROJECT_SCRIPT" install --non-interactive \
-        --dir "$WORK_DIR/ubo-lpa" 2>&1 | tee "$LOG_DIR/linux-update.log"
-    grep -q 'Chrome is running and loads uBO' "$LOG_DIR/linux-update.log" \
-        || die 'install did not rebuild while Chrome was running'
-    ! grep -q 'Injected into' "$LOG_DIR/linux-update.log" \
-        || die 'install edited Preferences while Chrome was running'
+    wait_for_worker
+    FIRST_WORKER=$(worker_on_disk)
+    note 'Updating the install while Chrome is running.'
+    printf '\n// added by the harness to stand for a newer ubo-lpa\n' >>"$WORKER_SOURCE"
+    update_while_running linux-update.log
+    note 'Restarting Chrome so that it loads the updated files.'
+    stop_linux_chrome
+    start_linux_chrome about:blank
+    wait_for_worker
+
+    note 'Updating back to the first worker while Chrome is running.'
+    cp -- "$WORK_DIR/sw.js.first" "$WORKER_SOURCE"
+    update_while_running linux-update-back.log
+    [[ $(worker_on_disk) == "$FIRST_WORKER" ]] \
+        || die 'the restored worker source did not get the file name of the first build'
+    # Chrome now starts with a companion page open, as it does when it
+    # restores a tab that was waiting in wait.html. A new worker normally waits
+    # until the previous worker's pages are closed, and the companion's worker
+    # must not wait. The page is the popup, which loads before uBO's background
+    # page exists and still has to show uBO's panel. The probe checks that the
+    # worker reports the build that is on disk, and that uBO's panel loads in
+    # the popup page.
+    note 'Restarting Chrome with the popup page open.'
+    stop_linux_chrome
+    start_linux_chrome "chrome-extension://$COMPANION_ID/popup.html"
 
     timeout --foreground --signal=TERM --kill-after=30s 8m \
         env PROBE_MODE=test EXPECT_WINDOWS=0 "$PYTHON_CMD" "$WORK_DIR/probe.py" 2>&1 \
@@ -2046,13 +2476,7 @@ PY
     # can still be running here, and uninstall does not edit a profile while
     # its browser is running.
     note 'Closing Chrome before the uninstall check.'
-    kill "$CHROME_PID" >/dev/null 2>&1 || true
-    reap_pid_bounded "$CHROME_PID"
-    CHROME_PID=
-    for _ in $(seq 1 60); do
-        profile_in_use "$LINUX_PROFILE" || break
-        sleep 1
-    done
+    stop_linux_chrome
 
     note 'Removing the extensions again to check uninstall.'
     "$PYTHON_CMD" "$PROJECT_SCRIPT" uninstall --dir "$WORK_DIR/ubo-lpa" \
