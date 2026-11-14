@@ -149,10 +149,10 @@ def page(window, shot: str, wait: float = 2) -> list[str]:
     return texts
 
 
-def control(window, text, cls: str = "Button", timeout: int = 300):
+def control(window, text, cls: str | None = "Button", timeout: int = 300):
     """
-    The visible, enabled control of this class whose text is text (or matches
-    it, a compiled pattern). Before the first page, and while a page's custom
+    The visible, enabled control of this class (any class for None) whose
+    text is text (or matches it, a compiled pattern). Before the first page, and while a page's custom
     action runs, Windows Installer shows the buttons disabled. WiX's Ready page
     has two of some buttons, with and without the UAC shield, and shows one;
     pywinauto's own lookup counts hidden controls too. A radio button is a
@@ -164,13 +164,19 @@ def control(window, text, cls: str = "Button", timeout: int = 300):
             for child in window.wrapper_object().descendants():
                 label = child.window_text()
                 matches = text.fullmatch(label) if hasattr(text, "fullmatch") else label == text
-                if (child.class_name() == cls and matches
+                if ((cls is None or child.class_name() == cls) and matches
                         and child.is_visible() and child.is_enabled()):
                     return child
         except Exception:  # the page is being replaced
             pass
         if time.time() > deadline:
-            raise Failure(f"no visible, enabled {cls} {text!r}")
+            seen = []
+            try:
+                seen = [f"{c.class_name()}:{c.window_text()[:40]}"
+                        for c in window.wrapper_object().descendants() if c.is_visible()]
+            except Exception:
+                pass
+            raise Failure(f"no visible, enabled {cls or 'control'} {text!r}; the page has {seen}")
         time.sleep(0.5)
 
 
@@ -286,8 +292,12 @@ def install_portable(msi: Path) -> str:
     check(any(t.endswith("folder Default") for t in texts),
           f"the Chrome page does not offer the Default profile: {texts}")
     click(window, "&Next")
-    folder = control(window, re.compile(r".*"), cls="Edit")
-    folder.set_edit_text(str(PORTABLE))
+    # Windows Installer's PathEdit control, which shows the folder.
+    folder = control(window, re.compile(r".*\\uBOLPA\\?"), cls=None)
+    note(f"the folder box is a {folder.class_name()}")
+    # Windows Installer reads the box into the property when it loses focus.
+    folder.set_focus()
+    folder.set_window_text(str(PORTABLE))
     folder.type_keys("{TAB}")
     toggle(window, re.compile(r"Install &maintenance.*"))
     page(window, "portable-3-options")
