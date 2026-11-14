@@ -1381,7 +1381,13 @@ def test_phase(cdp: Cdp) -> None:
     log(f"TOOLBAR_POPUP {json.dumps({'type': popup_target['type'], 'url': popup_target['url'][:60]})}")
     toolbar_session = cdp.attach(popup_target["id"])
     toolbar_panel = find_frame(cdp, toolbar_session, "popup-fenix.html")
-    if not toolbar_panel.evaluate("!!document.getElementById('switch')"):
+    # The frame exists before uBO's panel has rendered into it; under Wine
+    # that takes a few seconds.
+    for _ in range(40):
+        if toolbar_panel.evaluate("!!document.getElementById('switch')"):
+            break
+        time.sleep(0.5)
+    else:
         desktop_shot("00-toolbar-popup-empty")
         raise ProbeError("the toolbar popup opened without uBO's panel")
     log("TOOLBAR_POPUP_PANEL ok")
