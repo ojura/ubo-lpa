@@ -7,6 +7,30 @@ blocking intact.
 [![Windows Chrome under Wine](https://github.com/ojura/ubo-lpa/actions/workflows/wine.yml/badge.svg)](https://github.com/ojura/ubo-lpa/actions/workflows/wine.yml)
 [![Windows](https://github.com/ojura/ubo-lpa/actions/workflows/windows.yml/badge.svg)](https://github.com/ojura/ubo-lpa/actions/workflows/windows.yml)
 
+## Install
+
+Linux, with Chrome closed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.sh | sh
+```
+
+or `wget -qO- https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.sh | sh`.
+
+Windows: **[download the latest MSI](https://github.com/ojura/ubo-lpa/releases/latest/download/ubo-lpa.msi)**,
+or run in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.ps1 | iex
+```
+
+Both set up a daily update. The patched uBO starts with uBlock Origin's default
+settings; to keep the current ones, back them up from the stock uBO's dashboard
+first and restore them afterwards. [Installation details](#installation-details)
+describes each route.
+
+## How it works
+
 Chrome disables MV2 extensions, but it still supports legacy packaged apps
 (LPAs). This installer takes advantage of that to keep running the MV2 version of
 uBlock Origin. Adding the `app` entry to its manifest is enough to make Chrome
@@ -20,7 +44,7 @@ companion extension that provides the button and displays uBO's panel.
 [WRITEUP.md](WRITEUP.md) describes the technical details and lists all edits
 performed by the installer.
 
-## What the installer changes
+## What the installer does
 
 On both platforms the patched uBO is a separate extension with its own ID, so it
 starts from uBlock Origin's defaults. An existing uBO's filter lists, custom
@@ -36,7 +60,8 @@ under `$XDG_CONFIG_HOME` (default `~/.config`) in `google-chrome`, `-beta`,
 it also:
 
 - disables the Web Store uBO, so the two do not both filter
-- turns on `chrome://extensions` Developer mode, which the MV3 companion requires
+- turns on `chrome://extensions` Developer mode, which is required for installing
+  the companion extension
 - marks both extensions as allowed in incognito
 - grants the permissions declared in each manifest, without a prompt
 - turns on the companion's **Allow user scripts**, which lets uBO's scriptlets
@@ -44,29 +69,7 @@ it also:
 
 `uninstall` reverses the first two and removes both extensions.
 
-## Install
-
-Linux:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.sh | sh
-```
-
-or with wget:
-
-```bash
-wget -qO- https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.sh | sh
-```
-
-Windows: **[download the latest MSI](https://github.com/ojura/ubo-lpa/releases/latest/download/ubo-lpa.msi)**,
-or run in PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.ps1 | iex
-```
-
-Both set up the daily update. On Linux, close Chrome first. The sections below
-describe what each route does.
+## Installation details
 
 From a checkout, `ubo-lpa.py` runs on both platforms and requires Python 3.9+.
 It generates an RSA key per extension, using the `cryptography` package or the
@@ -112,7 +115,7 @@ profile, `install` keeps a copy of the original `Preferences` as
 | `update` | alias for `install`; rebuilds a current, consistent installation only after a confirmation prompt |
 | `check` | verify required files, IDs, cross-references and patch markers |
 | `status` | report installed versions, IDs and paths |
-| `uninstall` | remove both extensions and undo the profile changes [listed above](#what-the-installer-changes) |
+| `uninstall` | remove both extensions and undo the profile changes [listed above](#what-the-installer-does) |
 | `timer` | run `install` daily: a systemd user timer on Linux, a scheduled task on Windows |
 
 The timer runs `install` once a day, whether or not Chrome is open. If a
