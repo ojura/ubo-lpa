@@ -369,7 +369,11 @@ system.
 
 `load` was tested with retail Windows Chrome 157 under Wine 11.22: from a fresh
 profile, from a running Chrome with and without remote debugging, across a
-restart, and with a second run that finds both loaded and does not prompt.
+restart, and with a second run that finds both loaded and does not prompt. On
+the GitHub Actions Windows runner, `tests/windows/run.py` and
+`tests/windows/msi_test.py` run it with the runner's retail Chrome, with UI
+Automation clicking Allow, and check that Chrome showed exactly one prompt and
+kept both extensions after closing.
 
 ### `--load-extension`
 
