@@ -1917,8 +1917,13 @@ if ((LINUX_MODE)); then
     # XDG_CONFIG_HOME is unset for this launch only. It is set so the installer
     # finds the temporary profile, but while it is set, Chrome computes that
     # same directory as its own default user-data-dir and then rejects
-    # --remote-debugging-port.
+    # --remote-debugging-port. --ozone-platform=x11 keeps Chrome on Xvfb. Run
+    # from a Wayland desktop, Chrome would otherwise open its window on the
+    # desktop, even without WAYLAND_DISPLAY, since libwayland then connects
+    # to wayland-0. The screenshots would be black, and openPopup() would fail
+    # whenever that window does not have focus.
     env -u XDG_CONFIG_HOME "$CHROME_BIN" --user-data-dir="$LINUX_PROFILE" \
+        --ozone-platform=x11 \
         --no-first-run --no-default-browser-check --disable-gpu --no-sandbox \
         --disable-component-update --disable-features=SpareRendererForSitePerProcess \
         --window-position=20,20 --window-size=1240,820 --force-device-scale-factor=1 \
