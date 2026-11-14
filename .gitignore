@@ -23,3 +23,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.swp
+
+# MSI build output (windows/msi/build.py)
+/build/
+/dist/
+/upgrade/

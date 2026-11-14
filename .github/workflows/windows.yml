@@ -26,19 +26,70 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install cryptography
-        run: python -m pip install cryptography
+      - name: Install cryptography, and pywinauto and Pillow for the test
+        run: python -m pip install cryptography pywinauto pillow
 
-      - name: Test install, the scheduled task, an update under Chrome and uninstall
+      - name: Test install, the scheduled task, load, an update under Chrome and uninstall
         env:
           UBO_OUT: ${{ runner.temp }}\ubo-lpa-windows-results
         run: python tests/windows/run.py
 
-      - name: Upload logs
+      - name: Upload logs and screenshots
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}\ubo-lpa-windows-results
+          if-no-files-found: warn
+          retention-days: 14
+
+  msi:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install WiX, and Pillow for the art and pywinauto for the test
+        shell: pwsh
+        run: |
+          python -m pip install pillow pywinauto
+          dotnet tool install --global wix --version "6.*"
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          $version = (& "$env:USERPROFILE\.dotnet\tools\wix.exe" --version) -replace '\+.*', ''
+          & "$env:USERPROFILE\.dotnet\tools\wix.exe" extension add -g "WixToolset.UI.wixext/$version"
+          & "$env:USERPROFILE\.dotnet\tools\wix.exe" extension add -g "WixToolset.Util.wixext/$version"
+
+      - name: Build the MSI, and a newer one for the upgrade test
+        run: |
+          python windows/msi/build.py --version 1.0.${{ github.run_number }} --out dist
+          python windows/msi/build.py --version 1.1.${{ github.run_number }} --out upgrade
+
+      - name: Install through the wizard, upgrade and uninstall
+        env:
+          UBO_OUT: ${{ runner.temp }}\ubo-lpa-msi-results
+        run: python tests/windows/msi_test.py dist/ubo-lpa-1.0.${{ github.run_number }}.msi upgrade/ubo-lpa-1.1.${{ github.run_number }}.msi
+
+      - name: Upload the MSI
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ubo-lpa-msi-${{ github.run_number }}
+          path: dist/*.msi
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: msi-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\ubo-lpa-msi-results
           if-no-files-found: warn
           retention-days: 14
