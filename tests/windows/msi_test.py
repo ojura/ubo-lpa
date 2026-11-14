@@ -250,19 +250,21 @@ def show_ubo_panel(path: Path) -> None:
     button. A button UI Automation cannot find leaves the screenshot without
     the panel; it does not fail the test.
     """
-    subprocess.Popen([chrome_exe(), "https://d3ward.github.io/toolz/adblock.html"])
+    subprocess.Popen([chrome_exe(), "https://adblock-tester.com/"])
     time.sleep(15)
     try:
         from pywinauto import Desktop
         for window in Desktop(backend="uia").windows():
             if not window.element_info.class_name.startswith("Chrome_WidgetWin"):
                 continue
-            buttons = window.descendants(control_type="Button", title_re=r"uBlock Origin.*")
+            # Chrome names an action button after the extension's title.
+            buttons = [b for b in window.descendants(control_type="Button")
+                       if b.window_text().startswith("uBlock Origin")]
             if buttons:
                 window.set_focus()
                 buttons[0].invoke()
                 time.sleep(5)
-                note("opened uBO's panel from its toolbar button")
+                note(f"opened uBO's panel from its toolbar button {buttons[0].window_text()!r}")
                 break
         else:
             note("did not find the uBlock Origin button in Chrome's toolbar")
