@@ -150,8 +150,8 @@ def test_load(module, ubo_id: str, comp_id: str) -> None:
     with AllowClicker(OUT) as clicker:
         output = ubo_lpa("load", "load")
     screenshot(OUT / "after-load.png")
-    if clicker.clicks != 1:
-        raise Failure(f"expected one click on Allow, made {clicker.clicks}")
+    if clicker.prompts != 1:
+        raise Failure(f"expected one remote debugging prompt, Chrome showed {clicker.prompts}")
     for expected in ("running in Chrome", "Turned remote debugging off again"):
         if expected not in output:
             raise Failure(f"load did not report: {expected}")

@@ -103,7 +103,7 @@ def install_with_wizard(msi: Path) -> None:
     wizard["Next"].click()
     time.sleep(2)
     wizard.capture_as_image().save(OUT / "wizard-2-ready.png")
-    with AllowClicker(OUT):
+    with AllowClicker(OUT) as clicker:
         wizard["Install"].click()
         time.sleep(4)
         wizard.capture_as_image().save(OUT / "wizard-3-progress.png")
@@ -115,6 +115,8 @@ def install_with_wizard(msi: Path) -> None:
             time.sleep(2)
         else:
             raise Failure("the wizard did not reach its Finish page")
+    check(clicker.prompts == 1,
+          f"expected one remote debugging prompt during Setup, Chrome showed {clicker.prompts}")
     time.sleep(2)
     wizard.capture_as_image().save(OUT / "wizard-4-finish.png")
     screenshot(OUT / "desktop-after-install.png")
