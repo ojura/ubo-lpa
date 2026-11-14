@@ -97,45 +97,46 @@ so moving the checkout requires re-running `timer`.
 
 ### Windows
 
-Clone or update a persistent checkout and stage the extensions:
+The MSI from the [Windows workflow](https://github.com/ojura/ubo-lpa/actions/workflows/windows.yml)
+installs everything for the current user, without administrator rights. It
+brings its own Python, downloads and patches uBO into `%LOCALAPPDATA%\uBOLPA`,
+schedules the daily update, and loads both extensions into Chrome. Chrome asks
+once whether to allow remote debugging; a click on **Allow** is the only step
+Setup leaves to the user. If Chrome is running at that moment, Setup asks to
+restart it first, and Chrome reopens its tabs.
 
-```powershell
-$src = Join-Path $env:LOCALAPPDATA 'uBOLPA-source'; if (Test-Path (Join-Path $src '.git')) { git -C $src pull --ff-only } else { git clone https://github.com/ojura/ubo-lpa.git $src }; if ($LASTEXITCODE -eq 0) { python -m pip install cryptography; if ($LASTEXITCODE -eq 0) { python (Join-Path $src 'ubo-lpa.py') install } }
-```
-
-From an existing checkout:
+From a checkout, with Python and `cryptography`:
 
 ```powershell
 python -m pip install cryptography
 python ubo-lpa.py install
+python ubo-lpa.py load
+python ubo-lpa.py timer
 ```
 
-Then in Chrome:
+`load` does what Load unpacked does by hand, over Chrome's DevTools connection:
+it turns on Developer mode, loads both folders through the extensions page and
+pins the button. It switches remote debugging on only for this, and off again
+afterwards. Loading by hand works as well, once:
 
 1. Open `chrome://extensions`
 2. Turn on **Developer mode**
 3. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\extension`
 4. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\companion`
 
-These steps are needed once. Updates replace both folders in place, Chrome
-keeps the extensions loaded, and it loads the new version at its next start.
-For daily updates, run once:
-
-```powershell
-python ubo-lpa.py timer
-```
-
-This registers a scheduled task, `ubo-lpa-update`, that runs `install` once a
-day with `pythonw.exe`, without a console window. It runs while the user is
-logged on, and a day missed while the PC was off is caught up at the next
-logon. Each run appends its output to `update.log` in the install directory.
-`uninstall` removes the task. With `--dir`, the task name ends in a hash of the
-directory, so each install directory has its own task.
+Updates replace both folders in place, Chrome keeps the extensions loaded, and
+it loads the new version at its next start. `timer` registers a scheduled task,
+`ubo-lpa-update`, that runs `install` once a day with `pythonw.exe`, without a
+console window. It runs while the user is logged on, and a day missed while the
+PC was off is caught up at the next logon. Each run appends its output to
+`update.log` in the install directory. `uninstall` removes the task. With
+`--dir`, the task name ends in a hash of the directory, so each install
+directory has its own task.
 
 Of the automated routes tested on Windows, only enterprise policy installs an
-off-store extension that Chrome leaves enabled. That route needs administrator
-rights and marks the browser as managed. [WRITEUP.md](WRITEUP.md#windows)
-compares all the routes that were tested.
+off-store extension that Chrome leaves enabled, and only Load unpacked does so
+without managing the browser. [WRITEUP.md](WRITEUP.md#windows) compares all the
+routes that were tested, and describes how `load` drives Load unpacked.
 
 ## Layout
 
@@ -145,7 +146,9 @@ assets/             the .js and .html files added to uBO and the companion
 linux/ubo-lpa.sh    launcher
 windows/ubo-lpa.ps1 launcher
 tests/e2e/          browser harness, diagnostics tests, AF_UNIX shim for Wine
-tests/windows/      test of the scheduled task and updates on a Windows runner
+windows/msi/        the MSI: WiX sources, setup art and build script
+tests/windows/      Windows runner tests of load, the scheduled task, updates
+                    and the MSI
 WRITEUP.md          technical design, and why Windows needs a manual install
 ```
 
@@ -162,12 +165,14 @@ The Wine job installs the current WineHQ development build and loads both
 directories through **Load unpacked** and Chrome's Win32 folder picker, which is
 the manual route from the Windows instructions above.
 
-A third job runs [tests/windows/run.py](tests/windows/run.py) on a GitHub
-Actions Windows runner. It installs, registers the scheduled task and runs it
-through Task Scheduler, updates the install while Chrome for Testing has both
-extensions loaded, and uninstalls. Chrome for Testing loads the extensions with
-`--load-extension`, which retail Chrome ignores; the update only has to replace
-the files under a Chrome that holds them.
+The Windows workflow runs on GitHub Actions Windows runners, with the retail
+Chrome installed there. [tests/windows/run.py](tests/windows/run.py) installs,
+runs the scheduled task through Task Scheduler, runs `load` while UI Automation
+clicks Allow in Chrome's prompt, checks what Chrome saved about both
+extensions, updates the install while Chrome runs with them loaded, and
+uninstalls. [tests/windows/msi_test.py](tests/windows/msi_test.py) builds the
+MSI, installs it through the wizard with a screenshot of every page, upgrades
+it and uninstalls it.
 
 See [tests/e2e/README.md](tests/e2e/README.md) for local commands and safety
 notes.

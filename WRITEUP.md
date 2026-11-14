@@ -229,7 +229,8 @@ so any copy must remain private.
 The manifest type change is platform-independent, but extension delivery differs
 on Windows. Each automated route that was tested either did not install the
 extensions, left them disabled, or put the browser under enterprise management.
-The manual Load unpacked route gives an unmanaged, enabled installation.
+Load unpacked gives an unmanaged, enabled installation, and `ubo-lpa.py load`
+performs it over Chrome's DevTools connection after one click on Allow.
 
 ### Preference protection
 
@@ -277,6 +278,55 @@ authorization.
 | registry + local CRX | yes | **no** | `DISABLE_NOT_VERIFIED`, toggle greyed |
 | policy forcelist | yes | yes | managed banner, non-removable, admin |
 | **Load unpacked** | yes | yes | manual; requires Developer mode |
+| DevTools `Extensions.loadUnpacked` | yes | yes | gone at Chrome's next start |
+| **`load`: Load unpacked over DevTools** | yes | yes | one click on Allow; persists |
+
+### Load unpacked over DevTools: `load`
+
+Chrome 136 and later accept a DevTools connection to the default profile when
+"Allow remote debugging for this browser instance" is on in
+`chrome://inspect/#remote-debugging`, and then ask in an "Allow remote
+debugging?" prompt before each connection. The setting is
+`devtools.remote_debugging.user-enabled` in `Local State`, which Chrome reads
+when it starts and writes back when it exits. `load` therefore:
+
+1. Connects directly if Chrome already listens (`DevToolsActivePort` in the
+   user data directory names a port that accepts connections).
+2. Otherwise, with Chrome closed, sets the value in `Local State` and starts
+   Chrome. With Chrome running, it asks once to restart it, closes it as its
+   window's close button does, sets the value and starts it with
+   `--restore-last-session`. It cannot open `chrome://inspect` in the running
+   Chrome instead: Chrome ignores `chrome://` addresses on its command line,
+   both at start and when handed to a running instance.
+3. Waits for the user's click on Allow: Chrome answers the WebSocket upgrade
+   with 101 for Allow and 403 for Cancel.
+
+On the connection, `load` opens `chrome://extensions` and calls the page's own
+`chrome.developerPrivate` API: `updateProfileConfiguration({inDeveloperMode:
+true})`, then `loadUnpacked()` for each folder, and
+`updateExtensionConfiguration({pinnedToToolbar: true})` for the button.
+`loadUnpacked()` opens Chrome's folder picker, a Win32 common dialog; `load`
+finds it among Chrome's windows, sets the folder in its file name box (control
+`0x480` in Wine's dialog, the `Edit` in the `ComboBoxEx32` `0x47C` in Windows')
+and sends `IDOK`. Then it waits until `getExtensionsInfo()` lists both as
+enabled: Chrome lists an extension as disabled, with the reason `reloading`,
+while it loads it again. Finally, if it switched remote debugging on, it turns
+it off from `chrome://inspect` as the page's checkbox does,
+`chrome.send('set-remote-debugging-enabled', [false])`, and Chrome closes the
+connection.
+
+DevTools has a direct `Extensions.loadUnpacked(path)`, and retail Chrome 157
+accepts it on a consent connection without `--enable-unsafe-extension-debugging`.
+Chrome loads extensions that way for the current session only: after a restart
+they are gone, as with `--load-extension`. A drop of the folder onto
+`chrome://extensions` simulated with `Input.dispatchDragEvent` reaches the page
+as a directory, but the browser answers `loadUnpacked({useDraggedPath: true})`
+with "No dragged path": it records the path only for a drag from the operating
+system.
+
+`load` was tested with retail Windows Chrome 157 under Wine 11.22: from a fresh
+profile, from a running Chrome with and without remote debugging, across a
+restart, and with a second run that finds both loaded and does not prompt.
 
 ### `--load-extension`
 

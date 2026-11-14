@@ -2,11 +2,11 @@
 <!-- Texts of the setup wizard that differ from WiX's defaults. -->
 <WixLocalization Culture="en-US" xmlns="http://wixtoolset.org/schemas/v4/wxl">
   <String Id="WelcomeDlgTitle" Value="{\WixUI_Font_Bigger}uBlock Origin for Chrome" />
-  <String Id="WelcomeDlgDescription" Value="Setup downloads uBlock Origin from its official releases, patches it to run in Chrome as a legacy packaged app, builds a toolbar button for it, and checks for new releases every day.&#13;&#10;&#13;&#10;Chrome's own files and settings stay as they are. ubo-lpa is not affiliated with the uBlock Origin project." />
+  <String Id="WelcomeDlgDescription" Value="Setup downloads uBlock Origin from its official releases, patches it to run in Chrome as a legacy packaged app, and updates it every day. ubo-lpa is not affiliated with the uBlock Origin project." />
   <String Id="VerifyReadyDlgInstallTitle" Value="{\WixUI_Font_Title}Ready to install" />
   <String Id="VerifyReadyDlgInstallText" Value="Click Install to set up uBlock Origin. Setup then loads it into Chrome; Chrome asks once whether to allow remote debugging, and a click on Allow is all it needs. No administrator rights are needed." />
   <String Id="ProgressDlgTitleInstalling" Value="{\WixUI_Font_Title}Installing uBlock Origin for Chrome" />
   <String Id="ProgressDlgTextInstalling" Value="Downloading and patching uBlock Origin." />
   <String Id="ExitDialogTitle" Value="{\WixUI_Font_Bigger}uBlock Origin is ready" />
-  <String Id="ExitDialogDescription" Value="Chrome lists uBlock Origin on its extensions page, with its button pinned to the toolbar. If Chrome's permission was declined, a page with the steps for loading it by hand opened instead; the Start menu entry Load uBlock Origin into Chrome tries again.&#13;&#10;&#13;&#10;uBlock Origin checks for new releases every day." />
+  <String Id="ExitDialogDescription" Value="uBlock Origin updates itself daily. If Chrome's prompt was declined, Load uBlock Origin into Chrome in the Start menu tries again." />
 </WixLocalization>

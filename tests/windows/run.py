@@ -173,8 +173,13 @@ def test_load(module, ubo_id: str, comp_id: str) -> None:
     pinned = prefs.get("extensions", {}).get("pinned_extensions", [])
     if comp_id not in pinned:
         raise Failure(f"the toolbar button is not pinned: {pinned}")
-    if prefs.get("extensions", {}).get("ui", {}).get("developer_mode") is not True:
-        raise Failure("developer mode is off")
+    # Chrome on Windows keeps protected settings, developer mode among them,
+    # in Secure Preferences.
+    developer_mode = [name for name, data in (("Secure Preferences", secure), ("Preferences", prefs))
+                      if data.get("extensions", {}).get("ui", {}).get("developer_mode") is True]
+    if not developer_mode:
+        raise Failure("developer mode is off in both Secure Preferences and Preferences")
+    note(f"developer mode is on, in {developer_mode[0]}")
     local_state = json.loads((USER_DATA / "Local State").read_text(encoding="utf-8"))
     if local_state.get("devtools", {}).get("remote_debugging", {}).get("user-enabled"):
         raise Failure("remote debugging is still on")
