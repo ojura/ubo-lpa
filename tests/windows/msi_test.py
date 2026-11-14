@@ -123,9 +123,19 @@ def page(window, shot: str, wait: float = 2) -> list[str]:
     return texts
 
 
-def click(window, title: str) -> None:
-    """Click a button by its title, as the mouse would: MSI acts on BN_CLICKED."""
-    window.child_window(title=title, class_name="Button").click()
+def click(window, title: str, timeout: int = 300) -> None:
+    """Click a button by its title once it is enabled. Before the first page,
+    and while a page's custom action runs, Windows Installer shows the buttons
+    disabled."""
+    button = window.child_window(title=title, class_name="Button")
+    button.wait("exists visible enabled", timeout=timeout)
+    button.click()
+
+
+def first_page(window, button: str) -> None:
+    """Wait for the first page: until then Windows Installer shows its
+    preparing page, here while UboProbe runs ubo-lpa.py setup-info."""
+    window.child_window(title=button, class_name="Button").wait("exists visible enabled", timeout=300)
 
 
 def wait_for_finish(window, minutes: int = 15) -> None:
@@ -143,8 +153,9 @@ def install_with_wizard(msi: Path) -> None:
     log = OUT / "install.log"
     process = subprocess.Popen(["msiexec", "/i", str(msi), "/l*v", str(log)])
     window = wizard()
+    first_page(window, "&Next")
     texts = page(window, "wizard-1-welcome")
-    check(any("ubo-lpa" in t for t in texts), "the Welcome page's title does not name ubo-lpa")
+    check("ubo-lpa: uBlock Origin for Chrome" in texts, "the Welcome page's title does not name ubo-lpa")
     click(window, "&Next")
     texts = page(window, "wizard-2-release")
     check(any(re.search(r"uBlock Origin \d+\.\d+\.\d+ on GitHub", t) for t in texts),
@@ -176,6 +187,7 @@ def maintenance(action: str, shot: str, untick_updates: bool = False) -> None:
     """Open the maintenance page from the Start menu entry and run action on it."""
     os.startfile(str(MAINTENANCE_LNK))  # type: ignore[attr-defined]
     window = wizard()
+    first_page(window, "&Update now")
     page(window, f"{shot}-1-maintenance")
     click(window, action)
     if action == "&Change settings":
@@ -207,6 +219,7 @@ def install_portable(msi: Path) -> str:
     log = OUT / "portable.log"
     process = subprocess.Popen(["msiexec", "/i", str(msi), "/l*v", str(log)])
     window = wizard()
+    first_page(window, "&Next")
     click(window, "&Next")
     click(window, "The release &bundled with this installer")
     texts = page(window, "portable-1-release")
