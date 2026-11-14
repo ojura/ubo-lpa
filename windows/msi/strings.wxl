@@ -17,6 +17,7 @@
   <String Id="UboChromeTitle" Value="{\WixUI_Font_Title}Google Chrome" />
   <String Id="UboChromeDescription" Value="Choose the Chrome profiles that get uBlock Origin." />
   <String Id="UboChromeMissing" Value="Google Chrome was not found. Setup still builds uBlock Origin in its folder; once Chrome is installed, the Start menu entry's Change settings loads it." />
+  <String Id="UboChromeNoProfiles" Value="Chrome has no profile yet. Setup starts Chrome, which creates its first profile, and loads uBlock Origin into it." />
   <String Id="UboChromeProfiles" Value="Profiles in [UBOLPA_USER_DATA]:" />
   <String Id="UboChromeMore" Value="and [UBOLPA_PROFILES_MORE] more, which Setup leaves out" />
 

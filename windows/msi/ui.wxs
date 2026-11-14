@@ -84,6 +84,7 @@
         <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboChromeDescription)" />
         <Control Id="Chrome" Type="Text" X="20" Y="52" Width="330" Height="13" NoPrefix="yes" HideCondition="NOT UBOLPA_CHROME_FOUND" ShowCondition="UBOLPA_CHROME_FOUND" Text="{\WixUI_Font_Title}[UBOLPA_CHROME_TEXT]" />
         <Control Id="NoChrome" Type="Text" X="20" Y="52" Width="330" Height="40" NoPrefix="yes" HideCondition="UBOLPA_CHROME_FOUND" ShowCondition="NOT UBOLPA_CHROME_FOUND" Text="!(loc.UboChromeMissing)" />
+        <Control Id="NoProfiles" Type="Text" X="20" Y="72" Width="330" Height="40" NoPrefix="yes" HideCondition="NOT UBOLPA_CHROME_FOUND OR UBOLPA_P1_DIR" ShowCondition="UBOLPA_CHROME_FOUND AND NOT UBOLPA_P1_DIR" Text="!(loc.UboChromeNoProfiles)" />
         <Control Id="ProfilesLabel" Type="Text" X="20" Y="70" Width="330" Height="13" NoPrefix="yes" HideCondition="NOT UBOLPA_P1_DIR" ShowCondition="UBOLPA_P1_DIR" Text="!(loc.UboChromeProfiles)" />
         <Control Id="P1" Type="CheckBox" X="26" Y="86" Width="324" Height="15" Property="UBOLPA_P1" CheckBoxValue="1" Text="[UBOLPA_P1_LABEL]" HideCondition="NOT UBOLPA_P1_DIR" ShowCondition="UBOLPA_P1_DIR" DisableCondition="UBOLPA_P1_LOADED" />
         <Control Id="P2" Type="CheckBox" X="26" Y="102" Width="324" Height="15" Property="UBOLPA_P2" CheckBoxValue="1" Text="[UBOLPA_P2_LABEL]" HideCondition="NOT UBOLPA_P2_DIR" ShowCondition="UBOLPA_P2_DIR" DisableCondition="UBOLPA_P2_LOADED" />

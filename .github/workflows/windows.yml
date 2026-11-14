@@ -173,7 +173,7 @@ jobs:
           wizard-7-finish.png|setup-8-finish.png|Finished
           desktop-after-install.png|setup-9-chrome.png|uBlock Origin running in Chrome, with its button pinned
           maintenance-change-1-maintenance.png|setup-10-maintenance.png|The Start menu entry opens maintenance: update now, change settings or remove
-          portable-2-options.png|setup-11-portable.png|Without maintenance, Setup leaves nothing but the folder
+          portable-3-options.png|setup-11-portable.png|Without maintenance, Setup leaves nothing but the folder
           EOF
 
           if ! gh release view screenshots -R "$REPO" >/dev/null 2>&1; then

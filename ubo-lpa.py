@@ -46,6 +46,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -212,18 +213,14 @@ def version_tuple(tag: str) -> tuple:
 
 def resolve_latest_tag() -> tuple[str | None, bool]:
     """
-    (tag, from_api). When the release API is unreachable, each version in
-    KNOWN_GOOD is probed with a HEAD request. That list is fixed in this file,
-    so the fallback cannot find a release newer than its first entry.
+    (tag, from_github): the newest release, or, when GitHub cannot say, the
+    first version in KNOWN_GOOD that a HEAD request finds. That list is fixed
+    in this file, so the fallback cannot find a release newer than its first
+    entry.
     """
-    try:
-        data = json.loads(
-            _get(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest", 20)
-        )
-        if data.get("tag_name"):
-            return data["tag_name"], True
-    except Exception:
-        pass
+    tag = latest_release()
+    if tag:
+        return tag, True
     for version in KNOWN_GOOD:
         url = (
             f"https://github.com/{GITHUB_REPO}/releases/download/"
@@ -241,14 +238,30 @@ def resolve_latest_tag() -> tuple[str | None, bool]:
 
 
 def latest_release() -> str | None:
-    """The newest uBO release according to the release API, or None."""
+    """
+    The newest uBO release, or None. The release API answers 60 requests an
+    hour per address without a login, which machines behind one address can
+    use up; github.com's /releases/latest page then still redirects to the
+    newest release's tag.
+    """
     try:
         data = json.loads(
             _get(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest", 20)
         )
-        return data.get("tag_name") or None
+        if data.get("tag_name"):
+            return data["tag_name"]
+    except Exception:
+        pass
+    try:
+        request = urllib.request.Request(
+            f"https://github.com/{GITHUB_REPO}/releases/latest", method="HEAD",
+            headers={"User-Agent": "ubo-lpa"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            final = response.geturl()
     except Exception:
         return None
+    match = re.search(r"/releases/tag/([^/?#]+)$", final)
+    return urllib.parse.unquote(match.group(1)) if match else None
 
 
 def release_url(tag: str) -> str:
@@ -951,7 +964,7 @@ class Installer:
             # the fallback can offer a version older than the installed one.
             # That must not cause a downgrade. A broken install is still rebuilt
             # from the version already recorded.
-            source = ("The release API" if from_api
+            source = ("GitHub" if from_api
                       else f"{self.ubo_zip.name}" if self.ubo_zip is not None
                       else "The built-in release list")
             info(f"{source} offers {tag}, older than the installed {installed}.")

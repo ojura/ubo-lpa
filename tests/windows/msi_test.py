@@ -89,6 +89,32 @@ def chrome_running() -> bool:
                                           capture_output=True, text=True).stdout
 
 
+def chrome_exe() -> str:
+    for base in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        candidate = Path(os.environ.get(base, "")) / "Google/Chrome/Application/chrome.exe"
+        if os.environ.get(base) and candidate.is_file():
+            return str(candidate)
+    raise Failure("Google Chrome is not installed")
+
+
+def seed_profile() -> None:
+    """Run Chrome once, as a user has before installing, so it has created
+    its Default profile and recorded it in Local State."""
+    subprocess.Popen([chrome_exe(), "--no-first-run", "--no-default-browser-check", "about:blank"])
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        try:
+            local_state = json.loads((USER_DATA / "Local State").read_text(encoding="utf-8"))
+            if "Default" in local_state.get("profile", {}).get("info_cache", {}):
+                break
+        except (OSError, ValueError):
+            pass
+        time.sleep(1)
+    time.sleep(5)
+    close_chrome()
+    note("Chrome ran once and created its Default profile")
+
+
 def close_chrome() -> None:
     subprocess.run(["taskkill", "/im", "chrome.exe"], capture_output=True)
     deadline = time.time() + 60
@@ -166,7 +192,8 @@ def install_with_wizard(msi: Path) -> None:
     check(re.match(r"Google Chrome \d+\.\d+\.\d+\.\d+, installed for ", chrome),
           f"the Chrome page does not show Chrome's version: {texts}")
     (OUT / "chrome.txt").write_text(chrome, encoding="utf-8")
-    check(any("folder Default" in t for t in texts), "the Chrome page does not list the Default profile")
+    check(any(t.endswith("folder Default") for t in texts),
+          f"the Chrome page does not offer the Default profile: {texts}")
     click(window, "&Next")
     page(window, "wizard-4-options")
     click(window, "&Next")
@@ -193,7 +220,9 @@ def maintenance(action: str, shot: str, untick_updates: bool = False) -> None:
     if action == "&Change settings":
         page(window, f"{shot}-2-release")
         click(window, "&Next")
-        page(window, f"{shot}-3-chrome")
+        texts = page(window, f"{shot}-3-chrome")
+        check(any("folder Default, already has uBlock Origin" in t for t in texts),
+              "the Chrome page does not show that Default already has uBlock Origin")
         click(window, "&Next")
         if untick_updates:
             box = window.child_window(title="&Update uBlock Origin daily", class_name="Button")
@@ -227,6 +256,9 @@ def install_portable(msi: Path) -> str:
     check(links, f"the release page links no release: {texts}")
     bundled = links[-1]
     click(window, "&Next")
+    texts = page(window, "portable-2-chrome")
+    check(any(t.endswith("folder Default") for t in texts),
+          f"the Chrome page does not offer the Default profile: {texts}")
     click(window, "&Next")
     folder = window.child_window(class_name="Edit")
     folder.set_edit_text(str(PORTABLE))
@@ -234,15 +266,15 @@ def install_portable(msi: Path) -> str:
     box = window.child_window(title_re=r"Install &maintenance.*", class_name="Button")
     box.click()
     check(not box.get_check_state(), "could not untick maintenance")
-    page(window, "portable-2-options")
+    page(window, "portable-3-options")
     click(window, "&Next")
-    page(window, "portable-3-ready")
+    page(window, "portable-4-ready")
     with AllowClicker(OUT / "portable") as clicker:
         click(window, "&Install")
         wait_for_finish(window)
     check(clicker.prompts == 1,
           f"expected one remote debugging prompt during the portable install, Chrome showed {clicker.prompts}")
-    page(window, "portable-4-finish")
+    page(window, "portable-5-finish")
     click(window, "&Finish")
     check(process.wait(timeout=120) == 0, f"msiexec /i exited with {process.returncode}")
     return bundled
@@ -327,6 +359,7 @@ def main() -> int:
     USER_DATA.mkdir(parents=True, exist_ok=True)
     (USER_DATA / "First Run").touch()  # a user's Chrome has this marker
     try:
+        seed_profile()
         install_with_wizard(first)
         verify_install(version(first))
         verify_task(present=True)

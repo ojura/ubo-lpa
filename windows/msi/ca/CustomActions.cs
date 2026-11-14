@@ -114,7 +114,9 @@ namespace UboSetup
         }
 
         // The Chrome page's Next button: the ticked profiles, as load --profiles
-        // takes them. Without any, or without Chrome, Setup does not load.
+        // takes them. Without Chrome, or with every profile unticked, Setup does
+        // not load. A Chrome that has never run has no profile yet; load then
+        // starts it, and it creates its first one.
         [CustomAction]
         public static ActionResult UboSelectProfiles(Session session)
         {
@@ -125,7 +127,7 @@ namespace UboSetup
                     chosen.Add(session[$"UBOLPA_P{i}_DIR"]);
             session["UBOLPA_PROFILES"] = string.Join("|", chosen);
             bool load = string.IsNullOrEmpty(session["UBOLPA_PROBE_ERROR"])
-                ? !string.IsNullOrEmpty(session["UBOLPA_CHROME_FOUND"]) && chosen.Count > 0
+                ? !string.IsNullOrEmpty(session["UBOLPA_CHROME_FOUND"]) && (count == 0 || chosen.Count > 0)
                 : true;
             session["UBOLPA_SKIP_LOAD"] = load ? "" : "1";
             return ActionResult.Success;
