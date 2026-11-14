@@ -26,6 +26,7 @@ jobs:
           python3 -m py_compile ubo-lpa.py tests/e2e/probe.py
           python3 tests/e2e/test_probe_diagnostics.py
           bash -n tests/e2e/setup-ubo-wine-harness.sh
+          sh -n install.sh
 
       - name: Run the browser tests in Linux Chrome
         env:

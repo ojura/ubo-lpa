@@ -1,10 +1,11 @@
 # ubo-lpa
 
-Keeps uBlock Origin working in Chrome 151 and 152, with its Manifest V2
+Keeps uBlock Origin working in Chrome 151 through 157, with its Manifest V2
 blocking intact.
 
 [![Linux Chrome](https://github.com/ojura/ubo-lpa/actions/workflows/linux.yml/badge.svg)](https://github.com/ojura/ubo-lpa/actions/workflows/linux.yml)
 [![Windows Chrome under Wine](https://github.com/ojura/ubo-lpa/actions/workflows/wine.yml/badge.svg)](https://github.com/ojura/ubo-lpa/actions/workflows/wine.yml)
+[![Windows](https://github.com/ojura/ubo-lpa/actions/workflows/windows.yml/badge.svg)](https://github.com/ojura/ubo-lpa/actions/workflows/windows.yml)
 
 Chrome disables MV2 extensions, but it still supports legacy packaged apps
 (LPAs). This installer takes advantage of that to keep running the MV2 version of
@@ -45,42 +46,65 @@ it also:
 
 ## Install
 
-`ubo-lpa.py` runs on both platforms and requires Python 3.9+. It generates an RSA
-key per extension, using the `cryptography` package or the `openssl` command
-when that package is absent. Linux systems normally have `openssl`, so pip is
-not needed there. On Windows, install the package with
+Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.sh | sh
+```
+
+or with wget:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.sh | sh
+```
+
+Windows: **[download the latest MSI](https://github.com/ojura/ubo-lpa/releases/latest/download/ubo-lpa.msi)**,
+or run in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.ps1 | iex
+```
+
+Both set up the daily update. On Linux, close Chrome first. The sections below
+describe what each route does.
+
+From a checkout, `ubo-lpa.py` runs on both platforms and requires Python 3.9+.
+It generates an RSA key per extension, using the `cryptography` package or the
+`openssl` command when that package is absent. Linux systems normally have
+`openssl`, so pip is not needed there. On Windows, install the package with
 `python -m pip install cryptography`.
 
-Tested against Chrome 151.0.7922.108 and 152.0.7977.64 on Linux. The Windows
-steps (install, **Load unpacked** and a browser restart) were tested only in
-Windows Chrome under Wine 11, not on Windows itself.
+CI tests every push with the current stable Chrome on Linux, on GitHub's
+Windows runners, and as Windows Chrome under Wine 11; see
+[End-to-end tests](#end-to-end-tests).
 
 ### Linux
 
-Clone or update a persistent checkout and install:
+[install.sh](install.sh) keeps the repository in
+`~/.local/share/ubo-lpa-source` (under `$XDG_DATA_HOME` if set): a git checkout
+when git is installed, otherwise the `main` branch's archive. It runs `install`
+and `timer` from there, so the daily update keeps working as long as that
+directory stays. Running the one-liner again updates ubo-lpa, then uBO.
 
-```bash
-src="${XDG_DATA_HOME:-$HOME/.local/share}/ubo-lpa-source"; if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only; else git clone https://github.com/ojura/ubo-lpa.git "$src"; fi && python3 "$src/ubo-lpa.py" install
-```
-
-From an existing checkout:
+From a checkout:
 
 ```bash
 python3 ubo-lpa.py install
+python3 ubo-lpa.py timer
 ```
 
-Close Chrome for the first install. Chrome keeps each profile's `Preferences`
-in memory and writes it back on exit, so the installer only edits a profile
-while its browser is closed. With Chrome open, `install` builds the files,
-leaves the profiles alone and exits with status 1. Updates keep the same paths
-and IDs and only replace the files, so they run while Chrome is open, and
-Chrome loads the new version at its next start. Adding the extensions to a new
-profile and `uninstall` need Chrome closed again. Root access is not required. The extensions and their keys are
-stored in `~/.local/share/ublock-origin-lpa/` (under `$XDG_DATA_HOME` if set),
-or in the directory given with `--dir`. `timer` also writes a systemd service
-and timer to `~/.config/systemd/user/`. In each profile, `install` keeps a copy
-of the original `Preferences` as `Preferences.ubo-lpa.bak` until `uninstall`
-deletes it.
+Close Chrome for the first install. Chrome keeps each profile's `Preferences` in
+memory and writes it back on exit, so the installer only edits a profile while
+its browser is closed. With Chrome open, `install` builds the files, leaves the
+profiles alone and exits with status 1. Updates keep the same paths and IDs and
+only replace the files, so they run while Chrome is open, and Chrome loads the
+new version at its next start. Adding the extensions to a new profile and
+`uninstall` need Chrome closed again. Root access is not required. The
+extensions and their keys are stored in `~/.local/share/ublock-origin-lpa/`
+(under `$XDG_DATA_HOME` if set), or in the directory given with `--dir`. `timer`
+also writes a systemd service and timer to `~/.config/systemd/user/`. In each
+profile, `install` keeps a copy of the original `Preferences` as
+`Preferences.ubo-lpa.bak` until `uninstall` deletes it.
 
 | command | |
 |---|---|
@@ -99,13 +123,19 @@ so moving the checkout requires re-running `timer`.
 
 ### Windows
 
-The MSI from the [Windows workflow](https://github.com/ojura/ubo-lpa/actions/workflows/windows.yml)
-installs everything for the current user, without administrator rights. It
-brings its own Python, downloads and patches uBO into `%LOCALAPPDATA%\uBOLPA`,
-schedules the daily update, and loads both extensions into Chrome. Chrome asks
-once whether to allow remote debugging; a click on **Allow** is the only step
-Setup leaves to the user. If Chrome is running at that moment, Setup asks to
-restart it first, and Chrome reopens its tabs.
+The [latest MSI](https://github.com/ojura/ubo-lpa/releases/latest/download/ubo-lpa.msi)
+is the one the [Windows workflow](https://github.com/ojura/ubo-lpa/actions/workflows/windows.yml)
+built and tested from the newest commit on `main`, published as the
+[`latest` release](https://github.com/ojura/ubo-lpa/releases/tag/latest).
+[install.ps1](install.ps1) downloads it and starts its setup wizard. The MSI is
+not code-signed, so Windows SmartScreen warns about it.
+
+The MSI installs everything for the current user, without administrator rights.
+It brings its own Python, downloads and patches uBO into
+`%LOCALAPPDATA%\uBOLPA`, schedules the daily update, and loads both extensions
+into Chrome. Chrome asks once whether to allow remote debugging; a click on
+**Allow** is the only step Setup leaves to the user. If Chrome is running at
+that moment, Setup asks to restart it first, and Chrome reopens its tabs.
 
 From a checkout, with Python and `cryptography`:
 
@@ -118,8 +148,9 @@ python ubo-lpa.py timer
 
 `load` does what Load unpacked does by hand, over Chrome's DevTools connection:
 it turns on Developer mode, loads both folders through the extensions page,
-turns on the button's **Allow user scripts** and pins the button. It switches remote debugging on only for this, and off again
-afterwards. Loading by hand works as well, once:
+turns on the button's **Allow user scripts** and pins the button. It switches
+remote debugging on only for this, and off again afterwards. Loading by hand
+works as well, once:
 
 1. Open `chrome://extensions`
 2. Turn on **Developer mode**
@@ -146,6 +177,8 @@ routes that were tested, and describes how `load` drives Load unpacked.
 
 ```
 ubo-lpa.py          the implementation, both platforms
+install.sh          Linux one-liner: fetch the repository and install
+install.ps1         Windows one-liner: download the latest MSI and run it
 assets/             the .js and .html files added to uBO and the companion
 linux/ubo-lpa.sh    launcher
 windows/ubo-lpa.ps1 launcher

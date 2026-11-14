@@ -56,6 +56,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Parse install.ps1 with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              "$PWD\install.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors | Out-String | Write-Host; exit 1 }
+
       - name: Install WiX, and Pillow for the art and pywinauto for the test
         shell: pwsh
         run: |
@@ -93,3 +101,64 @@ jobs:
           path: ${{ runner.temp }}\ubo-lpa-msi-results
           if-no-files-found: warn
           retention-days: 14
+
+  publish:
+    # The README's download link and install.ps1 fetch the MSI from the
+    # "latest" release. It is replaced only from main, and only after both
+    # Windows jobs passed on that commit.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [installer, msi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the tested MSI
+        uses: actions/download-artifact@v8
+        with:
+          name: ubo-lpa-msi-${{ github.run_number }}
+          path: dist
+
+      - name: Move the latest tag to this commit and upload the MSI to its release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cp "dist/ubo-lpa-1.0.${{ github.run_number }}.msi" ubo-lpa.msi
+          if gh api "repos/$REPO/git/refs/tags/latest" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$REPO/git/refs/tags/latest" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api "repos/$REPO/git/refs" \
+              -f ref=refs/tags/latest -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          notes="ubo-lpa.msi version 1.0.${{ github.run_number }}, built from $GITHUB_SHA and tested by the Windows workflow.
+
+          It installs ubo-lpa for the current user without administrator rights, schedules the daily update and loads uBlock Origin into Chrome. To download and start it from PowerShell:
+
+              irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex
+
+          The MSI is not code-signed, so Windows SmartScreen warns about it."
+          if gh release view latest -R "$REPO" >/dev/null 2>&1; then
+            gh release edit latest -R "$REPO" --notes "$notes" --latest
+          else
+            gh release create latest -R "$REPO" --title "ubo-lpa for Windows" \
+              --notes "$notes" --latest
+          fi
+          gh release upload latest -R "$REPO" ubo-lpa.msi --clobber
+
+      - name: Check that the public link serves this MSI
+        run: |
+          set -euo pipefail
+          url="https://github.com/${{ github.repository }}/releases/latest/download/ubo-lpa.msi"
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsSL -o public.msi "$url" && cmp -s public.msi ubo-lpa.msi; then
+              echo "$url serves version 1.0.${{ github.run_number }}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "$url does not serve the MSI just uploaded" >&2
+          exit 1
