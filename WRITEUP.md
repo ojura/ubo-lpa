@@ -14,8 +14,8 @@ unchanged.
 the marker strings and manifest entries the patches add. It is not a
 byte-for-byte or semantic comparison.
 
-The installer applies seven edits to uBlock Origin and generates a companion
-extension. Each rebuild extracts a fresh copy of uBO and applies all seven
+The installer applies eight edits to uBlock Origin and generates a companion
+extension. Each rebuild extracts a fresh copy of uBO and applies all eight
 edits, so a given upstream release and key pair always produce the same result.
 Running `install` again rebuilds a current, consistent installation only after
 a confirmation prompt. `ubo-lpa.py check` verifies the result.
@@ -177,6 +177,49 @@ Two constraints on the measurement:
 The 10ms debounce coalesces uBO's mutation burst because `post()` forces layout
 twice per call. The panel reaches the same final height with longer delays, so a
 short delay avoids unnecessary latency.
+
+### 8. Scriptlets through the companion's user scripts: `js/vapi-scripting.js`
+
+uBO injects each site's scriptlets (`+js(...)` filters) with
+`tabs.executeScript` when `webNavigation.onCommitted` fires. On Chromium that
+arrives a few milliseconds after the page has started parsing, so an inline
+script early in `<head>` runs first, and anti-adblock loaders depend on that.
+Ad-Shield's bootstrap on index.hr saves the native `fetch`, `setAttribute` and
+`addEventListener` when it starts, so a scriptlet that arrives later cannot stop
+it, and `rmnt` empties the script only after it has run. Measured on index.hr
+with Chrome 157, uBO's scriptlets arrived 3 to 7 ms after the bootstrap on every
+load.
+
+The companion is an MV3 extension, so it can use `chrome.userScripts`, which
+injects registered code into the page's main world at `document_start`, before
+any page script. The edit inserts `assets/userscripts-bridge.js` into
+`vapi-scripting.js` and anchors six small changes on uBO's code:
+
+- When uBO works out a site's scriptlets, it also sends the main-world part,
+  wrapped in uBO's own trusted-site check, to the companion, which registers it
+  for that host with `runAt: document_start` and `world: MAIN`.
+- Once the companion confirms a site, navigations that start later get only the
+  isolated-world part from `executeScript`, so the scriptlets run once. A frame
+  whose own URL is not http(s), such as `about:blank`, still gets everything
+  from `executeScript`, because a registered user script does not match it.
+- When uBO drops a site from its cache it unregisters it, and when it resets
+  its scriptlets (after a filter list update, a change to a site's switches, a
+  logger toggle) or restarts, it unregisters all of them: the code embeds the
+  trusted-site list and a secret that changes at those points.
+
+The first navigation to a site after a reset still uses `executeScript` alone,
+which is uBO's normal behaviour. The companion needs the `userScripts`
+permission, host access to all sites, and its "Allow user scripts" toggle, which
+Chrome stores as `user_scripts_enabled` in its Preferences entry. On Linux the
+installer sets that pref the next time it edits the profile with Chrome closed;
+on Windows `load` turns it on, and by hand it is one more click on the
+companion's details page. When `chrome.userScripts` is unavailable, the
+companion answers that it cannot help and uBO keeps injecting on its own.
+
+Chrome applies a changed manifest of an unpacked extension only when it starts:
+a reload from `chrome://extensions` reloads the scripts but keeps the stored
+manifest. After an update that adds this edit, the companion has the new
+permissions from the next Chrome start.
 
 ### `browser_action` is retained
 

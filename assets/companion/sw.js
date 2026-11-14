@@ -33,3 +33,63 @@ chrome.tabs.onActivated.addListener(i => refresh(i.tabId));
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if ( info.status === 'complete' ) { refresh(tabId); }
 });
+
+// uBO hands over each site's main-world scriptlets, and chrome.userScripts
+// injects them at document_start, before the page's own scripts. uBO keeps
+// injecting them itself until a site is confirmed here, so a failure only
+// costs the early start. Operations run one at a time and in arrival order:
+// a reset that arrives after a registration has to remove it.
+let userScriptQueue = Promise.resolve();
+const queueUserScripts = fn => {
+  const run = userScriptQueue.then(fn);
+  userScriptQueue = run.catch(() => {});
+  return run;
+};
+const userScriptId = hostname => `site:${hostname}`;
+
+async function registerScriptlets(hostname, code) {
+  const matches = [ `*://${hostname}/*` ];
+  // Registering succeeds without host access, but Chrome then does not inject
+  // the script, so the site would lose its scriptlets.
+  if ( await chrome.permissions.contains({ origins: matches }) !== true ) {
+    throw new Error(`no host access to ${hostname}`);
+  }
+  const script = {
+    id: userScriptId(hostname),
+    matches,
+    js: [ { code } ],
+    runAt: 'document_start',
+    world: 'MAIN',
+    allFrames: true,
+  };
+  const existing = await chrome.userScripts.getScripts({ ids: [ script.id ] });
+  if ( existing.length !== 0 ) {
+    await chrome.userScripts.update([ script ]);
+  } else {
+    await chrome.userScripts.register([ script ]);
+  }
+}
+
+chrome.runtime.onMessageExternal.addListener((msg, sender, respond) => {
+  if ( sender.id !== UBO_ID || msg instanceof Object === false ) { return false; }
+  let job;
+  if ( chrome.userScripts === undefined ) {
+    // The permission is missing or "Allow user scripts" is off for this
+    // extension.
+    respond({ ok: false, error: 'chrome.userScripts is not available' });
+    return false;
+  } else if ( msg.what === 'registerScriptlets' ) {
+    job = ( ) => registerScriptlets(msg.hostname, msg.code);
+  } else if ( msg.what === 'unregisterScriptlets' ) {
+    job = ( ) => chrome.userScripts.unregister({ ids: [ userScriptId(msg.hostname) ] });
+  } else if ( msg.what === 'resetScriptlets' ) {
+    job = ( ) => chrome.userScripts.unregister();
+  } else {
+    return false;
+  }
+  queueUserScripts(job).then(
+    ( ) => respond({ ok: true }),
+    error => respond({ ok: false, error: String(error) }),
+  );
+  return true;
+});

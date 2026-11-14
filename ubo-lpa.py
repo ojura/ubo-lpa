@@ -293,7 +293,7 @@ def write_json(path: Path, data: dict) -> None:
 
 
 def patch_ubo(ext: Path, companion_id: str, embed_key: str | None) -> None:
-    """Apply the seven edits in WRITEUP.md to a freshly extracted copy."""
+    """Apply the eight edits in WRITEUP.md to a freshly extracted copy."""
     manifest_path = ext / "manifest.json"
     manifest = read_json(manifest_path)
 
@@ -384,7 +384,108 @@ def patch_ubo(ext: Path, companion_id: str, embed_key: str | None) -> None:
         html = html.replace("</body>", '<script src="js/popup-resize.js"></script>\n</body>')
         popup.write_text(html, encoding="utf-8")
 
+    # 8. hand each site's main-world scriptlets to the companion, which
+    #    registers them with chrome.userScripts so they run before the page's
+    #    own scripts
+    patch_scriptlet_injection(ext / "js" / "vapi-scripting.js", companion_id)
+
     ok("uBO patched")
+
+
+def patch_scriptlet_injection(path: Path, companion_id: str) -> None:
+    """
+    Edit 8. Each replacement is anchored on text in uBO's vapi-scripting.js;
+    when uBO changes that text, the build stops instead of shipping a half
+    edited file.
+    """
+    source = path.read_text(encoding="utf-8")
+    if "ubolpaUserScripts" in source:
+        return
+    edits = [
+        (
+            "/* global browser */\n",
+            "/* global browser */\n"
+            + asset("userscripts-bridge.js", COMP_ID=companion_id),
+        ),
+        (
+            "    if ( tabId < 0 ) { return; }\n"
+            "    rememberFrame(details);\n"
+            "    let { url } = details;\n"
+            "    if ( frameId !== 0 && reIsHTTP.test(url) === false ) {\n"
+            "        url = getEffectiveURL(tabId, frameId);\n"
+            "        if ( url === undefined ) { return; }\n"
+            "    }\n"
+            "    if ( reIsHTTP.test(url) === false ) { return; }\n"
+            "    registerContentScript(url);\n",
+            "    if ( tabId < 0 ) { return; }\n"
+            "    rememberFrame(details);\n"
+            "    ubolpaUserScripts.navStarted(details);\n"
+            "    let { url } = details;\n"
+            "    if ( frameId !== 0 && reIsHTTP.test(url) === false ) {\n"
+            "        url = getEffectiveURL(tabId, frameId);\n"
+            "        if ( url === undefined ) { return; }\n"
+            "    }\n"
+            "    if ( reIsHTTP.test(url) === false ) { return; }\n"
+            "    registerContentScript(url);\n",
+        ),
+        (
+            "    const code = uBO_assembleIsolatedCode(result) ?? null;\n"
+            "    contentScriptDict.set(hostname, { code, t: Date.now() });\n",
+            "    const code = uBO_assembleIsolatedCode(result) ?? null;\n"
+            "    const entry = { code, t: Date.now() };\n"
+            "    contentScriptDict.set(hostname, entry);\n"
+            "    ubolpaUserScripts.register(hostname, entry, result);\n",
+        ),
+        (
+            "    const entry = contentScriptDict.get(hostname);\n"
+            "    if ( Boolean(entry?.code) === false ) { return; }\n"
+            "    webext.tabs.executeScript(tabId, {\n"
+            "        frameId,\n"
+            "        matchAboutBlank: true,\n"
+            "        runAt: 'document_start',\n"
+            "        code: entry.code,\n"
+            "    });\n"
+            "    entry.t = Date.now();\n",
+            "    const entry = contentScriptDict.get(hostname);\n"
+            "    const code = ubolpaUserScripts.codeFor(entry, details);\n"
+            "    if ( Boolean(code) === false ) { return; }\n"
+            "    webext.tabs.executeScript(tabId, {\n"
+            "        frameId,\n"
+            "        matchAboutBlank: true,\n"
+            "        runAt: 'document_start',\n"
+            "        code,\n"
+            "    });\n",
+        ),
+        (
+            "    for ( const key of sortedKeys ) {\n"
+            "        contentScriptDict.delete(key);\n"
+            "    }\n",
+            "    for ( const key of sortedKeys ) {\n"
+            "        contentScriptDict.delete(key);\n"
+            "        ubolpaUserScripts.forget(key);\n"
+            "    }\n",
+        ),
+        (
+            "    if ( initialized ) { return; }\n",
+            "    if ( initialized ) { return; }\n"
+            "    // Registered user scripts outlive a restart, but the secrets in\n"
+            "    // their code do not.\n"
+            "    ubolpaUserScripts.reset();\n",
+        ),
+        (
+            "export function reset() {\n"
+            "    contentScriptDict.clear();\n",
+            "export function reset() {\n"
+            "    contentScriptDict.clear();\n"
+            "    ubolpaUserScripts.reset();\n",
+        ),
+    ]
+    for old, new in edits:
+        if source.count(old) != 1:
+            first = old.strip().splitlines()[0]
+            die(f"vapi-scripting.js: expected exactly one {first!r}; uBO's layout changed")
+        source = source.replace(old, new)
+    path.write_text(source, encoding="utf-8")
 
 
 def build_companion(comp: Path, ubo_id: str, ubo_dir: Path, embed_key: str | None) -> None:
@@ -408,7 +509,11 @@ def build_companion(comp: Path, ubo_id: str, ubo_dir: Path, embed_key: str | Non
             "legacy packaged app so Chrome's Manifest V2 shutdown does not "
             "disable it."
         ),
-        "permissions": ["tabs"],
+        # userScripts and host access let it register uBO's scriptlets so they
+        # run before the page's own scripts (edit 8). Only uBO may message it.
+        "permissions": ["tabs", "userScripts"],
+        "host_permissions": ["<all_urls>"],
+        "externally_connectable": {"ids": [ubo_id]},
         "action": {
             "default_popup": "popup.html",
             "default_title": "uBlock Origin",
@@ -530,6 +635,14 @@ def check(
         resize.exists() and "postMessage" in resize.read_text(encoding="utf-8"),
         True,
     )
+    scripting = ext / "js" / "vapi-scripting.js"
+    row(
+        "user scripts bridge",
+        scripting.exists()
+        and "ubolpaUserScripts.codeFor(" in scripting.read_text(encoding="utf-8"),
+        True,
+    )
+    row("companion userScripts", "userScripts" in comp_manifest.get("permissions", []), True)
     row("popup-fenix web-accessible", "popup-fenix.html" in manifest.get("web_accessible_resources", []), True)
     row("popup-resize tag", "popup-resize.js" in (ext / "popup-fenix.html").read_text(encoding="utf-8"), True)
     row("browser_action kept", "browser_action" in manifest, True)
@@ -549,6 +662,7 @@ def check(
     # Marker strings only prove a patch was attempted. These check the results.
     scanned = [
         ext / "js" / "popup-resize.js",
+        ext / "js" / "vapi-scripting.js",
         ext / "manifest.json",
         comp / "popup.js",
         comp / "sw.js",
@@ -620,6 +734,8 @@ def check(
                 row(f"{label} {name}", entry_state(entries.get(eid), want_dir), "enabled")
             dev = prefs.get("extensions", {}).get("ui", {}).get("developer_mode")
             row(f"{label} developer mode", dev, True)
+            user_scripts = (entries.get(comp_id) or {}).get("user_scripts_enabled")
+            row(f"{label} user scripts", user_scripts is True, True)
         if not found:
             print("  (no Chrome or Chromium profile found)")
 
@@ -1058,9 +1174,20 @@ class LinuxInstaller(Installer):
             stock["state"] = 0
             changed = True
 
+        # Chrome only gives the companion chrome.userScripts while its "Allow
+        # user scripts" toggle is on, and that toggle is this pref. Without it
+        # uBO injects scriptlets on its own as before, so the pref alone is
+        # never a reason to report the profile as waiting for Chrome to close.
+        companion = settings[comp_id]
+        user_scripts_off = companion.get("user_scripts_enabled") is not True
+        companion["user_scripts_enabled"] = True
+        running = browser_running(profile.parent)
+        if user_scripts_off and not running:
+            changed = True
+
         if not changed:
             return "current"
-        if browser_running(profile.parent):
+        if running:
             return "waiting"
 
         backup = prefs_path.with_suffix(prefs_path.suffix + ".ubo-lpa.bak")
@@ -1086,6 +1213,8 @@ class LinuxInstaller(Installer):
         perms = manifest.get("permissions", [])
         hosts = [p for p in perms if p.startswith("<") or "://" in p]
         apis = [p for p in perms if p not in hosts]
+        # MV3 lists host access separately; MV2 has it in "permissions".
+        hosts += manifest.get("host_permissions", [])
         grant = {
             "api": apis,
             "explicit_host": hosts,
@@ -1258,6 +1387,7 @@ class WindowsInstaller(Installer):
         print("  2. Turn on  Developer mode  (top right)")
         print(f"  3. Load unpacked  ->  {self.ext}")
         print(f"  4. Load unpacked  ->  {self.comp}")
+        print("  5. Details of \"uBlock Origin toolbar button\"  ->  Allow user scripts")
         print()
         info("Both extensions persist across browser restarts. See WRITEUP.md for details.")
         return 0
@@ -1443,8 +1573,11 @@ class WindowsInstaller(Installer):
             if current.get("location") != "UNPACKED":
                 die(f"Chrome did not load {folder}")
             ok(f"{label} is loaded in Chrome")
+        # userScriptsAccess is the companion's "Allow user scripts" toggle,
+        # which edit 8 needs.
         devtools.evaluate(session, "chrome.developerPrivate.updateExtensionConfiguration("
-                                   f"{{extensionId: '{comp_id}', pinnedToToolbar: true}})")
+                                   f"{{extensionId: '{comp_id}', pinnedToToolbar: true, "
+                                   "userScriptsAccess: true})")
 
         def enabled(ext_id: str, seconds: float) -> dict:
             # Chrome lists an extension as disabled, with the reason

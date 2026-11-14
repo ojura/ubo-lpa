@@ -391,6 +391,13 @@ class Fixtures(http.server.BaseHTTPRequestHandler):
                 "/canary?ubo-wine=' + Date.now())"
                 ".then(()=>status.textContent='request completed')"
                 ".catch(()=>status.textContent='request failed');</script>")
+        elif path == "/early":
+            # The first script in the document records whether uBO's scriptlet
+            # already ran, the way an anti-adblock loader in <head> would.
+            self._send(
+                "<!doctype html><script>window.__early = typeof window.uboLpaEarly;"
+                "</script><meta charset=utf-8><title>scriptlet timing</title>"
+                "<p>Scriptlet timing fixture</p>")
         elif path == "/canary":
             Fixtures.canary_hits += 1
             self.send_response(204)
@@ -774,6 +781,54 @@ def bridge_message(cdp: Cdp, companion: str, tab_id: int) -> dict:
       }})"""))
 
 
+def check_scriptlet_timing(cdp: Cdp, port: int) -> None:
+    """
+    Edit 8: once the companion has registered a site's scriptlets with
+    chrome.userScripts, they run before the page's first inline script. The
+    first load registers them. A filter list update in the fresh profile can
+    reset uBO's scriptlets, and the next load registers them again, so several
+    loads are tried.
+    """
+    # The earlier companion and dashboard tabs may be closed by now.
+    companion = cdp.new_page(f"chrome-extension://{COMPANION_ID}/popup.html")
+    dashboard = cdp.new_page(f"chrome-extension://{UBO_ID}/dashboard.html")
+    wait_for_ubo_ready(cdp, dashboard)
+    available = cdp.evaluate(companion, "typeof chrome.userScripts")
+    log(f"COMPANION_USER_SCRIPTS {available}")
+    if available != "object":
+        if os.environ.get("EXPECT_WINDOWS", "1") == "1":
+            # "Allow user scripts" is a manual step on Windows.
+            return
+        raise ProbeError("the companion has no chrome.userScripts")
+    background_call(cdp, dashboard, """
+      const ub = background.MU_Block;
+      ub.applyFilterListSelection({ toSelect: [ ub.userFiltersPath ], merge: true });
+      ub.saveUserFilters('127.0.0.1##+js(set, uboLpaEarly, true)\\n')
+        .then(() => ub.loadFilterLists())
+        .then(() => resolve(true), reject);""")
+    page = cdp.new_page()
+    seen = []
+    for _ in range(8):
+        cdp.navigate(page, f"http://127.0.0.1:{port}/early")
+        seen.append(cdp.evaluate(page, "window.__early"))
+        if len(seen) > 1 and seen[-1] == "boolean":
+            break
+        time.sleep(2)
+    log(f"SCRIPTLET_TIMING {json.dumps(seen)}")
+    cdp.close_page(page)
+    # A fast local page can also lose the race to tabs.executeScript, so
+    # the timing alone does not show that the user script ran.
+    registered = cdp.evaluate(
+        companion, "chrome.userScripts.getScripts().then(s => s.map(x => x.id))")
+    log(f"USER_SCRIPTS {json.dumps(registered)}")
+    cdp.close_page(dashboard)
+    cdp.close_page(companion)
+    if "site:127.0.0.1" not in (registered or []):
+        raise ProbeError("the companion did not register the site's scriptlets")
+    if seen[-1] != "boolean" or len(seen) < 2:
+        raise ProbeError("uBO's scriptlet did not run before the page's first script")
+
+
 def tab_id_for(cdp: Cdp, companion: str, url_prefix: str) -> int:
     value = cdp.evaluate(companion, f"""
       new Promise(resolve => {{
@@ -1102,6 +1157,10 @@ def test_phase(cdp: Cdp) -> None:
     log("TOOLBAR_POPUP_PANEL ok")
     time.sleep(2)
     desktop_shot("55-toolbar-action-popup")
+
+    # Last, because it opens and closes a tab, which can leave Chrome
+    # without a focused window for openPopup().
+    check_scriptlet_timing(cdp, port)
 
     (OUT_DIR / "targets-final.json").write_text(
         json.dumps(cdp.targets(), indent=2), encoding="utf-8")

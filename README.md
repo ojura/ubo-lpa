@@ -38,6 +38,8 @@ it also:
 - turns on `chrome://extensions` Developer mode, which the MV3 companion requires
 - marks both extensions as allowed in incognito
 - grants the permissions declared in each manifest, without a prompt
+- turns on the companion's **Allow user scripts**, which lets uBO's scriptlets
+  run before a page's own scripts (edit 8 in [WRITEUP.md](WRITEUP.md))
 
 `uninstall` reverses the first two and removes both extensions.
 
@@ -115,14 +117,16 @@ python ubo-lpa.py timer
 ```
 
 `load` does what Load unpacked does by hand, over Chrome's DevTools connection:
-it turns on Developer mode, loads both folders through the extensions page and
-pins the button. It switches remote debugging on only for this, and off again
+it turns on Developer mode, loads both folders through the extensions page,
+turns on the button's **Allow user scripts** and pins the button. It switches remote debugging on only for this, and off again
 afterwards. Loading by hand works as well, once:
 
 1. Open `chrome://extensions`
 2. Turn on **Developer mode**
 3. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\extension`
 4. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\companion`
+5. Open **Details** of "uBlock Origin toolbar button" and turn on **Allow user
+   scripts**, so uBO's scriptlets run before the page's own scripts
 
 Updates replace both folders in place, Chrome keeps the extensions loaded, and
 it loads the new version at its next start. `timer` registers a scheduled task,
