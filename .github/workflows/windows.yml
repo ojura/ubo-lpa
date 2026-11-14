@@ -120,7 +120,13 @@ jobs:
           name: ubo-lpa-msi-${{ github.run_number }}
           path: dist
 
-      - name: Move the latest tag to this commit and upload the MSI to its release
+      - name: Download the msi job's screenshots of the setup
+        uses: actions/download-artifact@v8
+        with:
+          name: msi-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: shots
+
+      - name: Move the latest tag to this commit and upload the MSI and the screenshots
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -134,20 +140,43 @@ jobs:
             gh api "repos/$REPO/git/refs" \
               -f ref=refs/tags/latest -f sha="$GITHUB_SHA" >/dev/null
           fi
+          # The msi job's screenshots, in the order setup shows them, under
+          # names that stay the same from build to build.
+          gallery=""
+          uploads=(ubo-lpa.msi)
+          for pair in \
+              "wizard-1-welcome.png:setup-1-welcome.png:Welcome page" \
+              "wizard-2-ready.png:setup-2-ready.png:Ready to install" \
+              "wizard-3-progress.png:setup-3-progress.png:Installing" \
+              "consent-1.png:setup-4-chrome-prompt.png:Chrome asks to allow remote debugging; Allow is the one click setup needs" \
+              "desktop-after-install.png:setup-5-finished.png:Finished, with the uBlock Origin button pinned in Chrome"; do
+            IFS=: read -r from to caption <<<"$pair"
+            if [ -f "shots/$from" ]; then
+              cp "shots/$from" "$to"
+              uploads+=("$to")
+              gallery+="**$caption**"$'\n\n'"![$caption](https://github.com/$REPO/releases/download/latest/$to)"$'\n\n'
+            else
+              echo "::warning::the msi job did not produce $from"
+            fi
+          done
           notes="ubo-lpa.msi version 1.0.${{ github.run_number }}, built from $GITHUB_SHA and tested by the Windows workflow.
 
           It installs ubo-lpa for the current user without administrator rights, schedules the daily update and loads uBlock Origin into Chrome. To download and start it from PowerShell:
 
               irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex
 
-          The MSI is not code-signed, so Windows SmartScreen warns about it."
+          The MSI is not code-signed, so Windows SmartScreen warns about it.
+
+          ## Setup, as the msi job saw it on a Windows runner
+
+          $gallery"
           if gh release view latest -R "$REPO" >/dev/null 2>&1; then
             gh release edit latest -R "$REPO" --notes "$notes" --latest
           else
             gh release create latest -R "$REPO" --title "ubo-lpa for Windows" \
               --notes "$notes" --latest
           fi
-          gh release upload latest -R "$REPO" ubo-lpa.msi --clobber
+          gh release upload latest -R "$REPO" "${uploads[@]}" --clobber
 
       - name: Check that the public link serves this MSI
         run: |

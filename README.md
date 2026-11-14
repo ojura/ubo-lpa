@@ -128,7 +128,8 @@ is the one the [Windows workflow](https://github.com/ojura/ubo-lpa/actions/workf
 built and tested from the newest commit on `main`, published as the
 [`latest` release](https://github.com/ojura/ubo-lpa/releases/tag/latest).
 [install.ps1](install.ps1) downloads it and starts its setup wizard. The MSI is
-not code-signed, so Windows SmartScreen warns about it.
+not code-signed, so Windows SmartScreen warns about it. The release page shows
+each step of the setup, from screenshots the msi job takes on a Windows runner.
 
 The MSI installs everything for the current user, without administrator rights.
 It brings its own Python, downloads and patches uBO into
