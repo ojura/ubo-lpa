@@ -28,8 +28,8 @@
                 build: '__RECIPE__',
                 version: browser.runtime.getManifest().version,
                 // True once js/messaging.js has set up vAPI.messaging. Before
-                // that, uBO's panel would fail to connect and stay empty, so
-                // the companion waits before it loads the panel.
+                // that, uBO's panel or logger would fail to connect and stay
+                // empty, so the companion waits before it loads them.
                 pagesCanConnect: vAPI.messaging.defaultHandler !== null,
             };
             try {

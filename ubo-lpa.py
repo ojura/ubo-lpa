@@ -405,14 +405,17 @@ def patch_ubo(ext: Path, companion_id: str, embed_key: str | None, token: str) -
 
         manifest = resolve(manifest)
 
-    # 3. expose the panel so the companion can iframe it
-    # Only popup-fenix.html, the document the companion iframes, has to be
-    # reachable from another origin. Its dependencies (css/, js/, img/) load
-    # from the same origin once the document is running. Listing those
-    # dependencies would unnecessarily expose more resources to websites.
+    # 3. expose the two documents the companion iframes
+    # The companion's popup shows uBO's panel (popup-fenix.html) in a frame,
+    # and its side panel shows uBO's logger (logger-ui.html). Only these two
+    # documents have to be reachable from another origin. Their dependencies
+    # (css/, js/, img/) load from the same origin once a document is running.
+    # Listing those dependencies would unnecessarily expose more resources to
+    # websites.
     war = list(manifest.get("web_accessible_resources", []))
-    if "popup-fenix.html" not in war:
-        war.append("popup-fenix.html")
+    for page in ("popup-fenix.html", "logger-ui.html"):
+        if page not in war:
+            war.append(page)
     manifest["web_accessible_resources"] = war
 
     # 5. let the companion and uBO message each other
@@ -435,8 +438,10 @@ def patch_ubo(ext: Path, companion_id: str, embed_key: str | None, token: str) -
     # 4. frame-ancestors in the CSP
     # A web-accessible resource can be framed by any page, and uBO's panel has
     # a working power switch in it, so an ordinary site could frame it and
-    # induce a click that disables filtering. frame-ancestors limits framing
-    # to uBO itself and the companion.
+    # induce a click that disables filtering. The logger is web-accessible too,
+    # and it has controls that create filters and rules, which a site could
+    # aim clicks at in the same way. frame-ancestors limits framing to uBO
+    # itself and the companion.
     csp = manifest.get("content_security_policy", "script-src 'self'; object-src 'self'")
     directives = [d.strip() for d in csp.split(";") if d.strip()]
     kept = [d for d in directives if d.split()[0].lower() != "frame-ancestors"]
@@ -717,7 +722,8 @@ def build_companion(comp: Path, ubo_id: str, ubo_dir: Path, embed_key: str | Non
         # redirect to an extension page that is web-accessible to the site the
         # navigation came from, so wait.html is listed in
         # web_accessible_resources.
-        "permissions": ["declarativeNetRequestWithHostAccess", "storage", "tabs", "userScripts"],
+        "permissions": ["declarativeNetRequestWithHostAccess", "sidePanel", "storage", "tabs",
+                        "userScripts"],
         "host_permissions": ["<all_urls>"],
         "web_accessible_resources": [{"resources": ["wait.html"], "matches": ["<all_urls>"]}],
         # Any site can frame a web-accessible page, and wait.html is one.
@@ -745,19 +751,24 @@ def build_companion(comp: Path, ubo_id: str, ubo_dir: Path, embed_key: str | Non
             for name, command in ubo_manifest.get("commands", {}).items()
         },
         "background": {"service_worker": worker_name},
+        # The side panel shows uBO's logger beside the page it is logging.
+        # Chrome lists the panel in its side panel menu.
+        "side_panel": {"default_path": "panel.html"},
     }
     if embed_key:
         manifest["key"] = embed_key
     write_json(comp / "manifest.json", manifest)
 
     (comp / worker_name).write_text(worker, encoding="utf-8")
-    # The pages: the popup and the launch guard's wait page, with ubo.js,
-    # which both share.
+    # The pages: the popup, the side panel and the launch guard's wait page,
+    # with ubo.js, which the three share.
     for name, subs in (
         ("ubo.js", {"UBO_ID": ubo_id}),
         ("popup.html", {}),
         ("popup.js", {"RESIZE_MSG": RESIZE_MSG, "RECIPE": recipe(),
                       "UBO_VERSION": str(ubo_manifest.get("version", ""))}),
+        ("panel.html", {}),
+        ("panel.js", {}),
         ("wait.html", {}),
         ("wait.js", {"OPEN_RULE": json.dumps(GUARD_OPEN_RULE)}),
     ):
@@ -928,6 +939,7 @@ def check(
         sorted(manifest.get("commands", {})))
     row("companion incognito", comp_manifest.get("incognito"), "split")
     row("popup-fenix web-accessible", "popup-fenix.html" in manifest.get("web_accessible_resources", []), True)
+    row("logger-ui web-accessible", "logger-ui.html" in manifest.get("web_accessible_resources", []), True)
     row("popup-resize tag", "popup-resize.js" in (ext / "popup-fenix.html").read_text(encoding="utf-8"), True)
     row("browser_action kept", "browser_action" in manifest, True)
     # Checked inside the frame-ancestors directive, since listing the companion
@@ -955,6 +967,8 @@ def check(
         comp / "popup.js",
         worker,
         comp / "popup.html",
+        comp / "panel.html",
+        comp / "panel.js",
         comp / "wait.html",
         comp / "wait.js",
         comp / "manifest.json",
@@ -1000,7 +1014,8 @@ def check(
             except Exception:
                 derived = "unreadable"
         row(f"{label} id matches key", derived, want)
-    for name in ("ubo.js", "popup.html", "popup.js", "wait.html", "wait.js", "manifest.json"):
+    for name in ("ubo.js", "popup.html", "popup.js", "panel.html", "panel.js", "wait.html",
+                 "wait.js", "manifest.json"):
         row(f"companion {name}", (comp / name).is_file(), True)
     row("popup origin guard", "e.origin !== UBO_ORIGIN" in popup_js, True)
     row("companion name", comp_manifest.get("name"))

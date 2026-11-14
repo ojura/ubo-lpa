@@ -45,6 +45,7 @@ browser. It has two modes:
   browser restart drops the session rule that switches the guard off. The
   probe removes that rule in the same way, and a page then has to pass
   through the companion's wait page and load;
+- the companion's side panel shows uBO's logger;
 - in the Linux run, the button is pinned to the toolbar, and starting uBO's
   incognito instance leaves the registered scriptlets in place.
 

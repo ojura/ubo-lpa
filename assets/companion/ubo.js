@@ -1,4 +1,4 @@
-// The popup and wait.html share this file. askUbo() asks
+// The popup, the side panel and wait.html share this file. askUbo() asks
 // uBO about its state, and uboStarted() waits until a page may show one of
 // uBO's own pages in a frame.
 const UBO_ID = '__UBO_ID__';

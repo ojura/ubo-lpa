@@ -93,7 +93,8 @@ it also:
 `uninstall` reverses the first two and removes both extensions.
 
 uBO's keyboard shortcuts are assigned at `chrome://extensions/shortcuts`, under
-"uBlock Origin toolbar button".
+"uBlock Origin toolbar button". Chrome's side panel menu has an entry of the
+same name, which shows uBO's logger beside the page.
 
 Chrome loads the tabs it restores at launch before uBO has started, so their
 first requests are not filtered. The button marks such a tab with "!". To have

@@ -130,19 +130,23 @@ in those pages.
 
 ### 3. `web_accessible_resources`
 
-The installer adds `popup-fenix.html`, allowing the companion to embed uBO's
-panel from its own origin. No other entry is added; uBO already ships
-`/web_accessible_resources/*` of its own. Its stylesheets, scripts and images
-load from the same origin once the panel is running, so they require no
-additional entry. Under MV2 every listed resource is reachable by any website,
-so this entry also lets any website embed the panel. Edit 4 blocks that.
+The installer adds `popup-fenix.html` and `logger-ui.html`. The companion
+embeds these two documents in its own pages: uBO's panel in its popup, and
+uBO's logger in its side panel. uBO's manifest already lists
+`/web_accessible_resources/*`, and the installer does not add any other entry.
+Once one of the two documents is running, its stylesheets, scripts and images
+load from the same origin, so they do not have to be listed. Under MV2 every
+listed resource is reachable by any website, so these entries also let any
+website embed the two documents. Edit 4 blocks that.
 
 ### 4. `frame-ancestors` in `content_security_policy`
 
-`popup-fenix.html` must be web-accessible for the companion to embed it,
-which also permits any web page to frame it. uBO's panel contains a functional
-power switch, so a hostile page could frame it and induce a click on the switch.
-The installer appends:
+`popup-fenix.html` and `logger-ui.html` have to be web-accessible so that the
+companion can embed them, and that also lets any web page frame them. uBO's
+panel contains a functional power switch, so a hostile page could frame the
+panel and induce a click on the switch. The logger has controls that create
+filters and rules, and a hostile page could aim clicks at those in the same
+way. The installer appends:
 
 ```
 frame-ancestors 'self' chrome-extension://<companion id>
@@ -150,8 +154,10 @@ frame-ancestors 'self' chrome-extension://<companion id>
 
 Testing against Chrome 152 confirmed that, without the directive, an ordinary
 HTTP page can frame the panel and access `#switch`. With the directive, the
-frame resolves to `chrome-error://`, while the companion popup remains
-functional.
+frame resolves to `chrome-error://`, while the companion's popup remains
+functional. In a test with Chrome 157, the logger behaved the same way: framed
+by a web page, it resolved to `chrome-error://`, and the companion's side panel
+still showed it.
 
 ### 5. `externally_connectable`
 
@@ -424,8 +430,8 @@ copies uBO's `commands` into the companion's manifest.
 The companion is an MV3 extension, so Chrome lets it have a toolbar button. Its
 popup shows uBO's panel in an iframe. The companion also does for uBO the other
 things an LPA may not do itself: it passes on uBO's keyboard commands,
-registers uBO's scriptlets as user scripts and keeps a `declarativeNetRequest`
-rule for the launch guard.
+registers uBO's scriptlets as user scripts, keeps a `declarativeNetRequest`
+rule for the launch guard and shows uBO's logger in a side panel.
 
 **Split incognito.** uBO declares `"incognito": "split"`, and so does the
 companion. Each extension then has one instance for regular windows and one for
@@ -570,9 +576,14 @@ open `wait.html` with an address of its choice. The page accepts only http(s)
 addresses and loads them, which the site could do itself. The companion's CSP
 forbids framing it.
 
-**uBO's panel loads once uBO accepts its connection.** The popup asks uBO
-first, and sets the frame's address once uBO's background page accepts
-connections from uBO's pages (`uboStarted()` in `ubo.js`, which the
+**The logger in the side panel.** The companion's side panel shows uBO's logger
+in a frame, beside the page it is logging. Chrome lists the side panel in its
+side panel menu under the companion's name. In an incognito window, the side
+panel shows the logger of uBO's incognito instance.
+
+**uBO's pages load once uBO accepts their connections.** The popup and the side
+panel ask uBO first, and set the frame's address once uBO's background page
+accepts connections from uBO's pages (`uboStarted()` in `ubo.js`, which the
 companion's pages share). In a frame, uBO's client code handles a failed
 connection to the background page the way a content script does. It shuts
 itself down and clears `vAPI` (`disconnectListener` in `js/vapi-client.js`),
@@ -589,7 +600,8 @@ concluded that uBO is not running, the notice says "uBlock Origin is not
 running. Check on chrome://extensions that it is turned on." instead (see
 Toolbar state above). The popup also tells the worker that uBO did not answer,
 so that the worker asks uBO at once. uBO's panel loads when uBO answers and
-accepts connections from its pages.
+accepts connections from its pages. The side panel shows these two notices in
+the same way.
 
 Above uBO's panel, the popup can show two more notices. The first is "uBlock
 Origin was updated. Chrome runs the previous version until it restarts." The
@@ -990,9 +1002,9 @@ iframe did not load.
 - `check` reports whether `popup-fenix.html` is missing from uBO's
   `web_accessible_resources`, or whether the companion's pages reference the
   wrong uBO ID (`ubo.js`).
-- The panel goes empty when uBO's background page stops while the popup is
-  open, because uBO's page in the frame then shuts itself down. Close the
-  popup and open it again.
+- The panel goes empty when uBO's background page stops while the popup or
+  the side panel is open, because uBO's page in the frame then shuts itself
+  down. Close the popup or the side panel and open it again.
 - A gap around the panel means the resize notifier is not running. Confirm
   `js/popup-resize.js` exists in the uBO directory and that `popup-fenix.html`
   references it. It must be an external file because uBO ships

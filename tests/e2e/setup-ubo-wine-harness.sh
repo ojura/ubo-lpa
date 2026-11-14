@@ -1271,6 +1271,42 @@ def check_launch_guard(cdp: Cdp, port: int) -> None:
     cdp.close_page(companion)
 
 
+def check_side_panel(cdp: Cdp) -> None:
+    """
+    The companion's side panel shows uBO's logger in a frame. Chrome opens a
+    side panel only in response to a user action, so the Runtime.evaluate call
+    here sets userGesture.
+    """
+    companion = cdp.new_page()
+    cdp.navigate(companion, f"chrome-extension://{COMPANION_ID}/popup.html")
+    result = cdp.send("Runtime.evaluate", {
+        "expression": """chrome.windows.getCurrent()
+          .then(w => chrome.sidePanel.open({windowId: w.id}))
+          .then(() => 'opened', e => 'failed: ' + e.message)""",
+        "awaitPromise": True, "returnByValue": True, "userGesture": True}, companion)
+    opened = result_value(result)
+    log(f"SIDE_PANEL {opened}")
+    if opened != "opened":
+        raise ProbeError("Chrome did not open the companion's side panel")
+    for _ in range(40):
+        for target in cdp.send("Target.getTargets")["targetInfos"]:
+            if target["type"] != "iframe" or f"{UBO_ID}/logger-ui.html" not in target["url"]:
+                continue
+            frame = cdp.attach(target["targetId"])
+            try:
+                if cdp.evaluate(frame, """location.protocol === 'chrome-extension:'
+                                          && !!document.getElementById('vwContent')"""):
+                    log("SIDE_PANEL_LOGGER ok")
+                    desktop_shot("58-side-panel-logger")
+                    cdp.close_page(companion)
+                    return
+            except ProbeError:
+                pass
+        time.sleep(0.5)
+    desktop_shot("00-side-panel-empty")
+    raise ProbeError("the side panel opened without uBO's logger")
+
+
 def check_commands(cdp: Cdp, extensions: str, companion: str, site: str) -> None:
     """
     The companion declares uBO's keyboard commands and passes each one on to
@@ -1760,6 +1796,9 @@ def test_phase(cdp: Cdp) -> None:
     # openPopup().
     check_scriptlets(cdp, port)
     check_launch_guard(cdp, port)
+    # The side panel check runs last, because it opens uBO's logger, and an
+    # open logger changes the code of uBO's scriptlets.
+    check_side_panel(cdp)
 
     (OUT_DIR / "targets-final.json").write_text(
         json.dumps(cdp.targets(), indent=2), encoding="utf-8")
