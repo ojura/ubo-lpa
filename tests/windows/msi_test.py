@@ -149,31 +149,42 @@ def page(window, shot: str, wait: float = 2) -> list[str]:
     return texts
 
 
-def click(window, title: str, timeout: int = 300) -> None:
-    """Click a button by its title once it is enabled. Before the first page,
-    and while a page's custom action runs, Windows Installer shows the buttons
-    disabled. WiX's Ready page has two of some buttons, with and without the
-    UAC shield, and shows one."""
-    button = window.child_window(title=title, class_name="Button", visible_only=True)
-    button.wait("exists visible enabled", timeout=timeout)
-    button.click()
+def control(window, text, cls: str = "Button", timeout: int = 300):
+    """
+    The visible, enabled control of this class whose text is text (or matches
+    it, a compiled pattern). Before the first page, and while a page's custom
+    action runs, Windows Installer shows the buttons disabled. WiX's Ready page
+    has two of some buttons, with and without the UAC shield, and shows one;
+    pywinauto's own lookup counts hidden controls too.
+    """
+    deadline = time.time() + timeout
+    while True:
+        try:
+            for child in window.wrapper_object().children():
+                label = child.window_text()
+                matches = text.fullmatch(label) if hasattr(text, "fullmatch") else label == text
+                if (child.class_name() == cls and matches
+                        and child.is_visible() and child.is_enabled()):
+                    return child
+        except Exception:  # the page is being replaced
+            pass
+        if time.time() > deadline:
+            raise Failure(f"no visible, enabled {cls} {text!r}")
+        time.sleep(0.5)
+
+
+def click(window, text, timeout: int = 300) -> None:
+    control(window, text, timeout=timeout).click()
 
 
 def first_page(window, button: str) -> None:
     """Wait for the first page: until then Windows Installer shows its
     preparing page, here while UboProbe runs ubo-lpa.py setup-info."""
-    window.child_window(title=button, class_name="Button", visible_only=True).wait(
-        "exists visible enabled", timeout=300)
+    control(window, button)
 
 
 def wait_for_finish(window, minutes: int = 15) -> None:
-    deadline = time.time() + minutes * 60
-    while time.time() < deadline:
-        finish = window.child_window(title="&Finish", class_name="Button", visible_only=True)
-        if finish.exists() and finish.is_enabled():
-            return
-        time.sleep(2)
-    raise Failure("the wizard did not reach its Finish page")
+    control(window, "&Finish", timeout=minutes * 60)
 
 
 def install_with_wizard(msi: Path) -> None:
@@ -227,8 +238,7 @@ def maintenance(action: str, shot: str, untick_updates: bool = False) -> None:
               "the Chrome page does not show that Default already has uBlock Origin")
         click(window, "&Next")
         if untick_updates:
-            box = window.child_window(title="&Update uBlock Origin daily", class_name="Button",
-                                      visible_only=True)
+            box = control(window, "&Update uBlock Origin daily")
             if box.get_check_state():
                 box.click()
             check(not box.get_check_state(), "could not untick the daily update")
@@ -263,11 +273,10 @@ def install_portable(msi: Path) -> str:
     check(any(t.endswith("folder Default") for t in texts),
           f"the Chrome page does not offer the Default profile: {texts}")
     click(window, "&Next")
-    folder = window.child_window(class_name="Edit", visible_only=True)
+    folder = control(window, re.compile(r".*"), cls="Edit")
     folder.set_edit_text(str(PORTABLE))
     folder.type_keys("{TAB}")
-    box = window.child_window(title_re=r"Install &maintenance.*", class_name="Button",
-                              visible_only=True)
+    box = control(window, re.compile(r"Install &maintenance.*"))
     box.click()
     check(not box.get_check_state(), "could not untick maintenance")
     page(window, "portable-3-options")
