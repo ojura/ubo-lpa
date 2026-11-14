@@ -34,6 +34,7 @@ import http.server
 import json
 import os
 import re
+import select
 import socket
 import struct
 import subprocess
@@ -115,6 +116,10 @@ class WebSocket:
         header += mask
         self.sock.sendall(
             bytes(header) + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+    def readable(self) -> bool:
+        """True if part of a message has arrived, so recv() returns soon."""
+        return bool(self._buffer) or bool(select.select([self.sock], [], [], 0)[0])
 
     def recv(self) -> str:
         chunks: list[bytes] = []
@@ -204,6 +209,17 @@ class Cdp:
             if "method" in message:
                 self.events.append(message)
         raise ProbeError(f"timed out waiting for {method}")
+
+    def drain(self) -> None:
+        """
+        Keep the events Chrome has already sent, without waiting for more.
+        Only whole messages are read: a shorter socket timeout could stop
+        recv() between a frame's header and its payload.
+        """
+        while self.ws.readable():
+            message = json.loads(self.ws.recv())
+            if "method" in message:
+                self.events.append(message)
 
     def send_nowait(self, method: str, params: dict | None = None,
                     session: str | None = None) -> None:
@@ -588,16 +604,19 @@ def set_dev_mode(cdp: Cdp, session: str) -> str:
         time.sleep(0.5)
     else:
         raise ProbeError("extensions toolbar never rendered")
+    # #devMode is a cr-toggle. Its checked property holds the state; Chrome
+    # 157 marks it with role=switch and aria-checked, where Chrome 152 used
+    # aria-pressed.
     cdp.evaluate(session, DEEP + """
       (() => {
         const toggle = deepOne('extensions-toolbar').shadowRoot.querySelector('#devMode');
-        if (toggle.getAttribute('aria-pressed') !== 'true') { toggle.click(); }
+        if (toggle.checked !== true) { toggle.click(); }
       })()""")
     time.sleep(1.0)
     settled = cdp.evaluate(session, DEEP + """
       (() => {
         const toggle = deepOne('extensions-toolbar').shadowRoot.querySelector('#devMode');
-        return toggle.getAttribute('aria-pressed') === 'true';
+        return toggle.checked === true;
       })()""")
     log(f"DEV_MODE {settled}")
     if settled is not True:
