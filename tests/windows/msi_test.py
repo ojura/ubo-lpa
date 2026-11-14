@@ -297,7 +297,9 @@ def install_portable(msi: Path) -> str:
     note(f"the folder box is a {folder.class_name()}")
     # Windows Installer reads the box into the property when it loses focus.
     folder.set_focus()
-    folder.set_window_text(str(PORTABLE))
+    # A RichEdit20W, which pywinauto wraps as an edit box; its
+    # set_window_text posts a pointer, set_edit_text sends it.
+    folder.set_edit_text(str(PORTABLE))
     folder.type_keys("{TAB}")
     toggle(window, re.compile(r"Install &maintenance.*"))
     page(window, "portable-3-options")
