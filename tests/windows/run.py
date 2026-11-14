@@ -146,8 +146,11 @@ def test_update_while_chrome_runs(ubo_id: str, comp_id: str) -> None:
     port = s.getsockname()[1]
     s.close()
     log = (OUT / "chrome.log").open("w")
+    # The default user data directory, so the installer's check for loaded
+    # extensions finds this profile as it finds a user's.
+    user_data = Path(os.environ["LOCALAPPDATA"]) / "Google" / "Chrome" / "User Data"
     process = subprocess.Popen([
-        str(chrome), "--headless=new", f"--user-data-dir={WORK / 'profile'}",
+        str(chrome), "--headless=new", f"--user-data-dir={user_data}",
         "--no-first-run", "--no-default-browser-check", "--disable-gpu",
         f"--remote-debugging-port={port}",
         f"--load-extension={ROOT / 'extension'},{ROOT / 'companion'}",
@@ -171,7 +174,8 @@ def test_update_while_chrome_runs(ubo_id: str, comp_id: str) -> None:
         note("Chrome has both extensions running: "
              + ", ".join(t["url"] for t in seen if t.get("url", "").startswith("chrome-extension://")))
         # Let uBO finish reading its bundled filter lists, so the update meets
-        # the files Chrome keeps open, not only the ones it is reading.
+        # the files Chrome keeps open, not only the ones it is reading. Chrome
+        # also writes its preferences to disk within this time.
         time.sleep(20)
 
         marker = ROOT / "extension" / "replaced-by-update"
@@ -180,7 +184,9 @@ def test_update_while_chrome_runs(ubo_id: str, comp_id: str) -> None:
         state = json.loads(state_file.read_text())
         state["version"] = "0.0.0"
         state_file.write_text(json.dumps(state))
-        ubo_lpa("update-while-running", "install", "--non-interactive")
+        output = ubo_lpa("update-while-running", "install", "--non-interactive")
+        if "at its next start" not in output:
+            raise Failure("the update did not see that Chrome has both extensions loaded")
         if marker.exists():
             raise Failure("install exited 0 but did not replace the extension directory")
         if process.poll() is not None:
