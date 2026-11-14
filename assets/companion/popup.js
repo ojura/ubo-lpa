@@ -2,7 +2,8 @@ const f = document.getElementById('ubo');
 
 // Apply the last known size synchronously, before the iframe gets a src, so the
 // popup opens at the right size instead of visibly resizing once uBO reports.
-// localStorage because it is synchronous; chrome.storage resolves after paint.
+// localStorage is used because it is synchronous. chrome.storage resolves after
+// the first paint.
 try {
   const c = JSON.parse(localStorage.getItem('uboPopupSize') || 'null');
   if ( c && c.w > 0 && c.h > 0 ) {

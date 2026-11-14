@@ -1,5 +1,5 @@
 // ubo-lpa: report uBO's panel size to the companion, which owns the iframe.
-// Must be an external file: uBO ships script-src 'self'.
+// Must be an external file, because uBO's CSP is script-src 'self'.
 (function(){
   if ( window === window.top ) { return; }
   let lastW = 0, lastH = 0;
@@ -23,8 +23,8 @@
     const panes = document.getElementById('panes');
     if ( document.body === null || panes === null ) { return; }
     const w = naturalWidth();
-    // #panes is content-sized; scrollHeight would be max(content, viewport)
-    // and therefore viewport-coupled too.
+    // #panes is content-sized. scrollHeight would be max(content, viewport),
+    // so it would depend on the viewport too.
     const h = Math.ceil(panes.getBoundingClientRect().height);
     if ( w === 0 || h === 0 ) { return; }
     if ( w === lastW && h === lastH ) { return; }

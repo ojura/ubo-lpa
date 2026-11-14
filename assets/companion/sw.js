@@ -17,8 +17,9 @@ async function refresh(tabId) {
     }
   } catch ( e ) {
   }
-  // Always written, so a failed or disabled state clears a stale count rather
-  // than leaving the previous tab's number visible.
+  // The text is written even when empty, so a stale count is cleared when
+  // the request fails, uBO is not ready yet, filtering is off for the page, or
+  // the badge is turned off.
   try {
     await chrome.action.setBadgeText({ tabId, text });
     if ( text ) {

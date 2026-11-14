@@ -29,20 +29,24 @@
 #include <unistd.h>
 
 /*
- * Wine master-socket bootstrap shim
- * ---------------------------------
+ * Preload shim for wineserver's master socket
+ * -------------------------------------------
  *
  * Some sandboxes reject socket(AF_UNIX, ...), which prevents wineserver from
  * creating its pathname master socket.  They may still allow
  * socketpair(AF_UNIX, ...), including SCM_RIGHTS descriptor passing.
  *
- * This preload library translates only pathname AF_UNIX/SOCK_STREAM sockets
- * into loopback TCP for rendezvous.  During connect/accept, the client creates
- * a native socketpair and wineserver copies its far endpoint once with
- * pidfd_getfd().  The client authorizes only that wineserver PID for the copy,
- * then revokes the authorization.  Both sides replace the TCP descriptor with
- * their native endpoint, so Wine's stream traffic, SCM_RIGHTS messages, and
- * credentials retain native AF_UNIX ordering and semantics.
+ * This preload library turns pathname AF_UNIX/SOCK_STREAM sockets into
+ * loopback TCP sockets, which the two sides use only to find each other and
+ * run the handshake.  Outside wineserver, it translates only the sockets that
+ * Wine's ntdll.so creates, unless WINE_TCP_PRELOAD_TRANSLATE_ALL is set, as
+ * it is in the tests.  During connect/accept, the client creates a native
+ * socketpair and keeps one end, and wineserver copies the other end with a
+ * single pidfd_getfd() call.  For that copy the client names the wineserver
+ * PID with PR_SET_PTRACER, and it clears that setting again afterwards.  Both
+ * sides then dup2() their end of the socketpair over the TCP descriptor, so
+ * Wine's stream data, SCM_RIGHTS messages and credentials go over a real
+ * AF_UNIX socket.
  */
 
 #define MAX_TRACKED_FDS 65536
@@ -600,8 +604,9 @@ static void cleanup_sidecar(const char *path)
     next_close(fd);
 }
 
-/* Preserve the flags Wine placed on the public descriptor while replacing
- * its TCP open-file description with one endpoint of the native socketpair. */
+/* Replace target_fd's TCP open file description with unix_fd, one end of the
+ * native socketpair, keeping the descriptor flags and file status flags that
+ * Wine set on target_fd. */
 static int replace_with_unix_endpoint(int target_fd, int unix_fd)
 {
     int descriptor_flags = next_fcntl(target_fd, F_GETFD);
@@ -959,7 +964,7 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
                       (unsigned)ntohl(server_hello.pid_be), strerror(saved_errno));
             goto error;
         }
-        debug_log("kernel has no PR_SET_PTRACER policy; continuing without authorization\n");
+        debug_log("kernel does not support PR_SET_PTRACER (Yama is off); continuing without it\n");
     }
     else ptracer_granted = true;
 
@@ -1001,7 +1006,7 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
     if (ptracer_granted && prctl(PR_SET_PTRACER, 0, 0, 0, 0) < 0)
     {
         saved_errno = errno;
-        debug_log("could not revoke wineserver ptrace authorization: %s\n",
+        debug_log("could not clear PR_SET_PTRACER for wineserver: %s\n",
                   strerror(saved_errno));
         goto error;
     }
@@ -1027,7 +1032,7 @@ error:
     {
         int error_before_revoke = saved_errno;
         if (prctl(PR_SET_PTRACER, 0, 0, 0, 0) < 0)
-            debug_log("could not revoke wineserver ptrace authorization: %s\n",
+            debug_log("could not clear PR_SET_PTRACER for wineserver: %s\n",
                       strerror(errno));
         saved_errno = error_before_revoke;
     }
@@ -1353,9 +1358,12 @@ int unlink(const char *path)
     ensure_symbols();
     ret = next_unlink(path);
     saved_errno = errno;
-    /* Wine's master pathname is the literal relative path "socket".  Do not
-     * inspect arbitrary sibling paths: wineserver also unlinks ordinary Wine
-     * files on behalf of clients.  Test mode retains generic-path cleanup. */
+    /* Wine's master socket is at the literal relative path "socket", so in
+     * wineserver only an unlink of that path removes a .winetcp rendezvous
+     * file.  wineserver also unlinks ordinary Wine files on behalf of
+     * clients, and their paths are not checked for a .winetcp file.  With
+     * WINE_TCP_PRELOAD_TRANSLATE_ALL set, as in the tests, every successful
+     * unlink gets this cleanup. */
     if (!ret && ((process_is_wineserver && !strcmp(path, "socket")) ||
                  (translate_all && *path)))
         cleanup_sidecar(path);
@@ -1366,15 +1374,15 @@ int unlink(const char *path)
 /* A Windows child created by NtCreateUserProcess does not reconnect to the
  * pathname master socket.  Wine has already made an anonymous AF_UNIX
  * socketpair, sent one end to wineserver, and exported the other as
- * WINESERVERSOCKET immediately before execv().  Remove the preload at that
- * boundary; the initial loader has no WINESERVERSOCKET and keeps the bridge
- * for its one pathname connection. */
+ * WINESERVERSOCKET immediately before execv(), so the preload is removed
+ * before that exec.  The initial loader has no WINESERVERSOCKET and keeps the
+ * preload for its one connection to the master socket by path. */
 int execv(const char *path, char *const argv[])
 {
     ensure_symbols();
     if (getenv("WINESERVERSOCKET"))
     {
-        debug_log("child socketpair exec: removing LD_PRELOAD before %s\n", path);
+        debug_log("WINESERVERSOCKET is set, removing LD_PRELOAD before executing %s\n", path);
         unsetenv("LD_PRELOAD");
     }
     return next_execv(path, argv);

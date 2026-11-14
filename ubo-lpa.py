@@ -4,17 +4,19 @@ ubo-lpa: run uBlock Origin in Chrome 151 and 152 as a legacy packaged app.
 
 One implementation for Linux and Windows. The patching, companion build and
 consistency checks are identical on both. Only the delivery to Chrome differs,
-in the two Installer subclasses at the bottom of this file.
+and the two Installer subclasses at the bottom of this file implement it.
 
-    ubo-lpa.py install     download, patch, build, and perform the supported
-                           platform-specific installation steps
-    ubo-lpa.py update      alias for install; makes no changes to a current,
-                           consistent installation
+    ubo-lpa.py install     download, patch and build, then add both extensions
+                           to every Chrome profile (Linux) or print the steps
+                           for loading them by hand (Windows)
+    ubo-lpa.py update      alias for install; rebuilds a current, consistent
+                           installation only after a confirmation prompt
     ubo-lpa.py check       verify required files, IDs, cross-references and
-                           patch sentinels
-    ubo-lpa.py status      recorded version, IDs and where they are installed
+                           patch markers
+    ubo-lpa.py status      recorded version and IDs, the install directory,
+                           and which Chrome profiles have the extensions
     ubo-lpa.py uninstall   remove both extensions and undo the profile changes
-    ubo-lpa.py timer       systemd user timer that attempts an update daily
+    ubo-lpa.py timer       install a systemd user timer that runs install daily
 """
 
 from __future__ import annotations
@@ -193,9 +195,9 @@ def version_tuple(tag: str) -> tuple:
 
 def resolve_latest_tag() -> tuple[str | None, bool]:
     """
-    (tag, from_api). When the release API is unreachable, each candidate below
-    is probed with a HEAD request; that list is fixed, so a candidate result is
-    never authoritative about what the latest release is.
+    (tag, from_api). When the release API is unreachable, each version in
+    KNOWN_GOOD is probed with a HEAD request. That list is fixed in this file,
+    so the fallback cannot find a release newer than its first entry.
     """
     try:
         data = json.loads(
@@ -280,7 +282,7 @@ def write_json(path: Path, data: dict) -> None:
 
 
 def patch_ubo(ext: Path, companion_id: str, embed_key: str | None) -> None:
-    """Apply the seven edits to a freshly extracted copy."""
+    """Apply the seven edits in WRITEUP.md to a freshly extracted copy."""
     manifest_path = ext / "manifest.json"
     manifest = read_json(manifest_path)
 
@@ -315,18 +317,19 @@ def patch_ubo(ext: Path, companion_id: str, embed_key: str | None) -> None:
         manifest = resolve(manifest)
 
     # 3. expose the panel so the companion can iframe it
-    # Only the document the companion iframes has to be reachable from another
-    # origin. Its dependencies (css/, js/, img/) load from the same origin once
-    # the document is running. Listing those dependencies would unnecessarily
-    # increase the resources exposed to websites.
+    # Only popup-fenix.html, the document the companion iframes, has to be
+    # reachable from another origin. Its dependencies (css/, js/, img/) load
+    # from the same origin once the document is running. Listing those
+    # dependencies would unnecessarily expose more resources to websites.
     war = list(manifest.get("web_accessible_resources", []))
     if "popup-fenix.html" not in war:
         war.append("popup-fenix.html")
     manifest["web_accessible_resources"] = war
 
-    # 4. let the companion message uBO for the badge count
+    # 5. let the companion message uBO for the badge count
     manifest["externally_connectable"] = {"ids": [companion_id]}
 
+    # 4. frame-ancestors in the CSP
     # A web-accessible resource can be framed by any page, and uBO's panel has
     # a working power switch in it, so an ordinary site could frame it and
     # induce a click that disables filtering. frame-ancestors limits framing
@@ -352,14 +355,14 @@ def patch_ubo(ext: Path, companion_id: str, embed_key: str | None) -> None:
         shim = asset("webext-shim.js")
         webext.write_text(source[:anchor] + shim + "\n" + source[anchor:], encoding="utf-8")
 
-    # 5. badge bridge
+    # 6. badge bridge
     vapi = ext / "js" / "vapi-background.js"
     source = vapi.read_text(encoding="utf-8")
     if "uboBadge" not in source:
         with vapi.open("a", encoding="utf-8") as handle:
             handle.write(asset("badge-bridge.js"))
 
-    # 6. resize notifier, external file because uBO ships script-src 'self'
+    # 7. resize notifier, external file because uBO's CSP is script-src 'self'
     (ext / "js" / "popup-resize.js").write_text(
         asset("popup-resize.js", RESIZE_MSG=RESIZE_MSG, COMP_ID=companion_id),
         encoding="utf-8",
@@ -476,7 +479,7 @@ def check(
         print("PROBLEMS FOUND")
         return 1
     if not isinstance(manifest, dict) or not isinstance(comp_manifest, dict):
-        print(f"  {'manifest wrong shape':<26} expected a JSON object")
+        print(f"  {'manifest wrong type':<26} expected a JSON object")
         print()
         print("PROBLEMS FOUND")
         return 1
@@ -512,15 +515,15 @@ def check(
     )
     resize = ext / "js" / "popup-resize.js"
     row(
-        "resize shim",
+        "resize notifier",
         resize.exists() and "postMessage" in resize.read_text(encoding="utf-8"),
         True,
     )
-    row("popup-fenix in WAR", "popup-fenix.html" in manifest.get("web_accessible_resources", []), True)
+    row("popup-fenix web-accessible", "popup-fenix.html" in manifest.get("web_accessible_resources", []), True)
     row("popup-resize tag", "popup-resize.js" in (ext / "popup-fenix.html").read_text(encoding="utf-8"), True)
     row("browser_action kept", "browser_action" in manifest, True)
-    # Checked inside the frame-ancestors directive, since the companion origin
-    # appearing in some other directive would not permit the framing.
+    # Checked inside the frame-ancestors directive, since listing the companion
+    # origin in any other directive would not permit the framing.
     ancestors = ""
     for directive in manifest.get("content_security_policy", "").split(";"):
         parts = directive.split()
@@ -564,7 +567,8 @@ def check(
         ("companion", keys / "comp.pem", comp_id),
     ):
         # Existence is not enough: the next rebuild derives the ID from this
-        # key, so an unreadable one silently changes identity later.
+        # key, so a different key would change the ID, and an unreadable one
+        # would make the rebuild fail.
         if not pem.is_file():
             row(f"{label} private key", "missing", "matches")
             continue
@@ -651,7 +655,7 @@ class Installer:
     MAGIC = "ubo-lpa-install"
 
     def owns_root(self) -> bool:
-        """Require the state markers written by this installer."""
+        """True if the state file has the marker this installer writes."""
         try:
             data = json.loads(self.state_file.read_text())
         except Exception:
@@ -673,17 +677,18 @@ class Installer:
     # -- identity: one mechanism on both platforms. The key is stored beside
     #    the extensions and reused, so ids are stable across reinstalls.
     def ids(self) -> tuple[str, str, str, str]:
-        # Written before the keys, so a failed first install still leaves a
-        # directory uninstall recognises as its own. A directory that already
-        # holds something else is never adopted, because installing would
-        # replace fixed child names inside it.
+        # The marker is written before the keys, so a failed first install
+        # still leaves a directory that uninstall recognises as its own. A
+        # directory that already contains other files is refused, because the
+        # install would overwrite anything in it named extension, companion,
+        # ubo.pem and so on.
         if not self.owns_root():
             existing = [p.name for p in self.root.iterdir()] if self.root.is_dir() else []
             if existing:
                 die(
-                    f"{self.root} is not empty and carries no ubo-lpa marker "
-                    f"({', '.join(sorted(existing)[:4])}). Choose an empty or "
-                    "new directory."
+                    f"{self.root} is not empty "
+                    f"({', '.join(sorted(existing)[:4])}) and does not have "
+                    "the ubo-lpa marker. Choose an empty or new directory."
                 )
             self.save_state()
         ubo_key, ubo_id = ensure_key(self.root / "ubo.pem")
@@ -709,9 +714,9 @@ class Installer:
     def lock():
         """
         Serialise every mutating command. The file lives outside the install
-        directory, since uninstall deletes that, and the name is fixed rather
-        than per-directory because two different --dir runs still edit the same
-        Chrome profiles.
+        directory, since uninstall deletes that. The name is fixed rather than
+        per-directory, because runs with different --dir values still edit the
+        same Chrome profiles.
         """
         # Use a per-user path rather than $TMPDIR, which a caller can change to
         # bypass the lock.
@@ -753,15 +758,16 @@ class Installer:
         outdated = present and installed != tag
 
         if installed and version_tuple(tag) < version_tuple(installed):
-            # The candidate list cannot see releases newer than itself, so an
-            # unreachable API must never turn into a downgrade. A broken install
-            # is still rebuilt from the version already recorded.
-            source = "the release API" if from_api else "the fallback candidates"
+            # KNOWN_GOOD is fixed in this file, so when the API is unreachable
+            # the fallback can offer a version older than the installed one.
+            # That must not cause a downgrade. A broken install is still rebuilt
+            # from the version already recorded.
+            source = "The release API" if from_api else "The built-in release list"
             info(f"{source} offers {tag}, older than the installed {installed}.")
             if present and not inconsistent:
                 info("Keeping the installed version.")
                 return 0
-            info(f"Installation is incomplete, so rebuilding {installed}.")
+            info(f"Installation is incomplete or inconsistent, so rebuilding {installed}.")
             tag = installed
             present = False
 
@@ -810,9 +816,9 @@ class Installer:
         ])
         shutil.rmtree(staging, ignore_errors=True)
 
-        # IDs are recorded before any profile is touched, so a delivery that
-        # fails part way through still leaves uninstall able to find the entries
-        # it wrote. The version follows once delivery has succeeded.
+        # IDs are recorded before any profile is touched, so if delivery fails
+        # part way through, uninstall can still find the entries already
+        # written. The version is recorded only after delivery succeeds.
         self.save_state(ext_id=ubo_id, comp_id=comp_id)
         self.deliver(ubo_id, comp_id, tag)
         self.save_state(version=tag)
@@ -841,8 +847,8 @@ class Installer:
             return
         if not self.owns_root():
             die(
-                f"{self.root} carries no ubo-lpa marker; refusing to delete a "
-                "directory this installer did not create"
+                f"{self.root} does not have the ubo-lpa marker; refusing to "
+                "delete a directory this installer did not create"
             )
         failed = []
         # Remove the state file last, so a partial failure leaves the directory
@@ -888,8 +894,8 @@ def swap_pair(pairs: list[tuple[Path, Path]]) -> None:
                 dest.rename(backup)
             else:
                 backup = None
-            # Record the directory before moving it so a failure restores this
-            # directory as well as those already completed.
+            # Record dest before moving the new copy into it, so a failure
+            # restores this directory as well as those already moved.
             done.append((dest, backup))
             new_dir.rename(dest)
     except OSError:
@@ -979,8 +985,8 @@ class LinuxInstaller(Installer):
         # Chrome disables unpacked MV3 extensions with
         # DISABLE_UNSUPPORTED_DEVELOPER_EXTENSION (1<<24) unless this is set.
         # uBO is exempt as a legacy packaged app; the companion is not. Without
-        # this setting, request blocking functions but the toolbar button is
-        # absent.
+        # this setting, uBO still blocks requests but the toolbar button does
+        # not appear.
         ui = prefs["extensions"].setdefault("ui", {})
         touched_dev_mode = ui.get("developer_mode") is not True
         ui["developer_mode"] = True
@@ -1045,8 +1051,9 @@ class LinuxInstaller(Installer):
     def remove(self) -> None:
         if not self.owns_root():
             die(
-                f"{self.root} carries no ubo-lpa marker; refusing to touch "
-                "profiles or files for a directory this installer did not create"
+                f"{self.root} does not have the ubo-lpa marker; refusing to "
+                "touch profiles or files for a directory this installer did "
+                "not create"
             )
         if chrome_running():
             die("Chrome is running. Close it first.")
@@ -1081,7 +1088,7 @@ class LinuxInstaller(Installer):
         if (unit_dir / f"{TIMER_NAME}.timer").exists():
             result = systemctl("disable", "--now", f"{TIMER_NAME}.timer")
             if result is None:
-                info("systemctl not found; leaving the timer units in place")
+                info("systemctl not found; deleting the timer units without disabling them")
             elif result.returncode != 0:
                 warn(f"could not disable the timer: {result.stderr.strip()}")
         for unit in (f"{TIMER_NAME}.service", f"{TIMER_NAME}.timer"):
@@ -1094,8 +1101,8 @@ class LinuxInstaller(Installer):
         unit_dir = Path.home() / ".config/systemd/user"
         unit_dir.mkdir(parents=True, exist_ok=True)
         script = Path(__file__).resolve()
-        # systemd splits ExecStart on whitespace and treats % specially, so both
-        # paths are quoted and any % doubled.
+        # systemd splits ExecStart on whitespace and treats % specially, so each
+        # path is quoted and any % doubled.
         def esc(value: str) -> str:
             return '"' + str(value).replace("%", "%%").replace('"', '\\"') + '"'
 
@@ -1127,15 +1134,16 @@ class LinuxInstaller(Installer):
 
 class WindowsInstaller(Installer):
     """
-    Stages files only. Chrome on Windows rejects the tested automated routes for
-    an off-store extension (see WRITEUP.md), so the final step is manual.
+    Stages files only. Every automated route tested for an off-store extension
+    on Windows Chrome is ignored, leaves the extension disabled or needs
+    enterprise policy (see WRITEUP.md), so the final step is manual.
     """
 
     def deliver(self, ubo_id: str, comp_id: str, version: str) -> None:
         print()
         ok(f"Staged uBlock Origin {version} in {self.root}")
         print()
-        warn("Chrome requires manual completion of this installation:")
+        warn("This installation has to be completed manually:")
         print()
         print("  1. Open  chrome://extensions")
         print("  2. Turn on  Developer mode  (top right)")
@@ -1164,7 +1172,10 @@ def systemctl(*args: str) -> subprocess.CompletedProcess | None:
 
 
 def chrome_running() -> bool:
-    """True if any browser whose profiles this installer touches is running."""
+    """
+    True if Chrome or Chromium is running. The installer edits the profiles of
+    both browsers.
+    """
     for name in ("chrome", "chromium", "chromium-browser", "google-chrome"):
         try:
             if subprocess.run(["pgrep", "-x", name], capture_output=True).returncode == 0:

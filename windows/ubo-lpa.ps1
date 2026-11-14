@@ -15,7 +15,7 @@ foreach ($cmd in $candidates) {
     }
 }
 
-Write-Host 'error: no Python 3.9+ found.' -ForegroundColor Red
+Write-Host 'error: could not find Python 3.9+.' -ForegroundColor Red
 Write-Host '       winget install Python.Python.3.12'
 Write-Host '       or https://www.python.org/downloads/'
 exit 1

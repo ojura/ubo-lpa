@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Contract tests for the Chrome extension-diagnostics gate."""
+"""Tests for the probe's check of Chrome's extension diagnostics, and a check
+that probe.py matches its copy in setup-ubo-wine-harness.sh."""
 
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ def record(*, install=(), manifest=(), runtime=()) -> dict:
     }
 
 
-class DiagnosticContractTests(unittest.TestCase):
+class ExtensionDiagnosticsTests(unittest.TestCase):
     def problems(self, info: dict, *, required: bool = True) -> dict:
         return unexpected_extension_diagnostics(info, UBO, COMPANION, required)
 
@@ -96,7 +97,7 @@ class DiagnosticContractTests(unittest.TestCase):
 
 
 class EmbeddedProbeTests(unittest.TestCase):
-    def test_readable_probe_matches_embedded_harness_copy(self) -> None:
+    def test_probe_py_matches_copy_in_harness(self) -> None:
         here = Path(__file__).resolve().parent
         harness = (here / "setup-ubo-wine-harness.sh").read_text(encoding="utf-8")
         marker = "cat >\"$WORK_DIR/probe.py\" <<'PYPROBE'\n"

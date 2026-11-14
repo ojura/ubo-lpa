@@ -168,7 +168,7 @@ static void receive_payload(int fd, char expected, int flags)
     if (payload != expected)
     {
         errno = EPROTO;
-        fail("peek payload mismatch");
+        fail("payload mismatch in the MSG_PEEK test");
     }
 }
 
@@ -194,9 +194,9 @@ static int exercise_dup_chain(int fd)
     return third;
 }
 
-/* Wine starts wineserver as a child of its first client.  On systems using
- * Yama's default ptrace policy, that child may copy an FD from its parent only
- * after the parent explicitly authorizes it. */
+/* Wine starts wineserver as a child of its first client.  Under Yama's
+ * default ptrace_scope of 1, that child may copy an FD from its parent only
+ * after the parent names it with PR_SET_PTRACER. */
 static void exercise_child_server(const char *socket_path)
 {
     struct sockaddr_un address;
@@ -211,7 +211,7 @@ static void exercise_child_server(const char *socket_path)
 
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
-    if (strlen(socket_path) >= sizeof(address.sun_path)) fail("child-server path");
+    if (strlen(socket_path) >= sizeof(address.sun_path)) fail("child-server socket path does not fit in sun_path");
     strcpy(address.sun_path, socket_path);
     address_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) +
                               strlen(socket_path) + 1);
@@ -292,19 +292,19 @@ int main(void)
     close(native_pair[1]);
     if (!mkdtemp(directory)) fail("mkdtemp");
     if (snprintf(socket_path, sizeof(socket_path), "%s/socket", directory) >=
-        (int)sizeof(socket_path)) fail("socket path");
+        (int)sizeof(socket_path)) fail("socket path is too long");
     if (snprintf(unrelated_path, sizeof(unrelated_path), "%s/unrelated", directory) >=
         (int)sizeof(unrelated_path) ||
         snprintf(unrelated_sidecar, sizeof(unrelated_sidecar), "%s.winetcp", unrelated_path) >=
         (int)sizeof(unrelated_sidecar))
-        fail("unrelated paths");
+        fail("unrelated file paths are too long");
     received = open(unrelated_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     if (received < 0) fail("create unrelated file");
     close(received);
     if (mkfifo(unrelated_sidecar, 0600) < 0) fail("create unrelated FIFO");
     if (unlink(unrelated_path) < 0) fail("unlink unrelated file");
     if (lstat(unrelated_sidecar, &st) < 0 || !S_ISFIFO(st.st_mode))
-        fail("unrelated FIFO preserved");
+        fail("unlink removed or replaced the unrelated FIFO");
     if (unlink(unrelated_sidecar) < 0) fail("unlink unrelated FIFO");
 
     listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -330,7 +330,7 @@ int main(void)
         errno != EADDRINUSE)
     {
         errno = EPROTO;
-        fail("competing bind reservation");
+        fail("second bind to the socket path did not fail with EADDRINUSE");
     }
     close(competing_listener);
 
@@ -354,7 +354,7 @@ int main(void)
     if (accept(listener, NULL, NULL) != -1 || errno != ETIMEDOUT)
     {
         errno = EPROTO;
-        fail("partial handshake timeout");
+        fail("accept did not time out on a partial handshake");
     }
     kill(attacker, SIGTERM);
     if (waitpid(attacker, &status, 0) != attacker) fail("wait attacker");
@@ -388,12 +388,12 @@ int main(void)
             memcmp(buffer, "parent-to-child", 15))
         {
             errno = EIO;
-            fail("child transferred pipe");
+            fail("child read wrong data from the transferred pipe");
         }
         if (read(child_received, buffer, 1) != 0)
         {
             errno = EIO;
-            fail("child pipe EOF");
+            fail("child did not get EOF on the transferred pipe");
         }
         close(child_received);
 
@@ -432,11 +432,11 @@ int main(void)
 
     wait_readable(accepted);
     receive_payload(accepted, 'P', MSG_PEEK);
-    require_readable_now(accepted, "readiness after first MSG_PEEK");
+    require_readable_now(accepted, "not readable after the first MSG_PEEK");
     receive_payload(accepted, 'P', MSG_PEEK);
-    require_readable_now(accepted, "readiness after second MSG_PEEK");
+    require_readable_now(accepted, "not readable after the second MSG_PEEK");
     receive_payload(accepted, 'P', 0);
-    require_not_readable_now(accepted, "readiness after consuming peeked payload");
+    require_not_readable_now(accepted, "still readable after reading the peeked payload");
     if (write(peek_release[1], "x", 1) != 1) fail("peek release write");
     close(peek_release[1]);
 
@@ -446,12 +446,12 @@ int main(void)
         memcmp(buffer, "child-to-parent", 15))
     {
         errno = EIO;
-        fail("parent transferred pipe");
+        fail("parent read wrong data from the transferred pipe");
     }
     if (read(received, buffer, 1) != 0)
     {
         errno = EIO;
-        fail("parent pipe EOF");
+        fail("parent did not get EOF on the transferred pipe");
     }
     close(received);
     close(accepted);
@@ -465,7 +465,7 @@ int main(void)
 
     if (unlink(socket_path) < 0) fail("unlink marker");
     if (snprintf(socket_path, sizeof(socket_path), "%s/server-child", directory) >=
-        (int)sizeof(socket_path)) fail("child-server socket path");
+        (int)sizeof(socket_path)) fail("child-server socket path is too long");
     exercise_child_server(socket_path);
     if (rmdir(directory) < 0) fail("rmdir");
     puts("bridge test: PASS");

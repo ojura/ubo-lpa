@@ -19,7 +19,7 @@ companion extension that provides the button and displays uBO's panel.
 [WRITEUP.md](WRITEUP.md) describes the technical details and lists all edits
 performed by the installer.
 
-## Installation effects
+## What the installer changes
 
 On both platforms the patched uBO is a separate extension with its own ID, so it
 starts from uBlock Origin's defaults. An existing uBO's filter lists, custom
@@ -29,10 +29,10 @@ Export them from the stock uBO's dashboard first and import them afterwards.
 On Windows, the installer writes the patched uBO and companion directories. Both
 must then be loaded manually from `chrome://extensions`.
 
-On Linux the installer edits each Chrome profile. Profiles are searched under
-`$XDG_CONFIG_HOME` (default `~/.config`) in `google-chrome`, `-beta`,
-`-unstable` and `chromium`, covering `Default` and `Profile *`. In each one it
-also:
+On Linux the installer adds both extensions to each Chrome profile it finds
+under `$XDG_CONFIG_HOME` (default `~/.config`) in `google-chrome`, `-beta`,
+`-unstable` and `chromium`, covering `Default` and `Profile *`. In each profile
+it also:
 
 - disables the Web Store uBO, so the two do not both filter
 - turns on `chrome://extensions` Developer mode, which the MV3 companion requires
@@ -45,12 +45,13 @@ also:
 
 `ubo-lpa.py` runs on both platforms and requires Python 3.9+. It generates an RSA
 key per extension, using the `cryptography` package or the `openssl` command
-when that package is absent. Linux therefore requires no additional Python
-package. On Windows, install it with `python -m pip install cryptography`.
+when that package is absent. Linux systems normally have `openssl`, so pip is
+not needed there. On Windows, install the package with
+`python -m pip install cryptography`.
 
 Tested against Chrome 151.0.7922.108 and 152.0.7977.64 on Linux. The Windows
-installer lifecycle was exercised under Wine 11, which is a compatibility layer
-rather than Windows itself.
+steps (install, **Load unpacked** and a browser restart) were tested only in
+Windows Chrome under Wine 11, not on Windows itself.
 
 ### Linux
 
@@ -67,25 +68,27 @@ python3 ubo-lpa.py install
 ```
 
 Close Chrome first; it rewrites `Preferences` on exit and will overwrite the
-injection. Root access is not required. By default, the extensions and their
-keys are stored in `~/.local/share/ublock-origin-lpa/`, which `--dir` changes;
-`timer` also writes a systemd unit under `~/.config/systemd/user/`, and install
-leaves a `Preferences.ubo-lpa.bak` in each profile until uninstall.
+injection. Root access is not required. The extensions and their keys are
+stored in `~/.local/share/ublock-origin-lpa/` (under `$XDG_DATA_HOME` if set),
+or in the directory given with `--dir`. `timer` also writes a systemd service
+and timer to `~/.config/systemd/user/`. In each profile, `install` keeps a copy
+of the original `Preferences` as `Preferences.ubo-lpa.bak` until `uninstall`
+deletes it.
 
 | command | |
 |---|---|
-| `install` | download, patch, build companion, inject into every profile |
-| `update` | alias for `install`; makes no changes to a current, consistent installation |
-| `check` | verify required files, IDs, cross-references and patch sentinels |
+| `install` | download and patch uBO, build the companion, inject both into every profile |
+| `update` | alias for `install`; rebuilds a current, consistent installation only after a confirmation prompt |
+| `check` | verify required files, IDs, cross-references and patch markers |
 | `status` | report installed versions, IDs and paths |
-| `uninstall` | remove both extensions and undo the profile changes below |
-| `timer` | systemd user timer that attempts an update daily |
+| `uninstall` | remove both extensions and undo the profile changes [listed above](#what-the-installer-changes) |
+| `timer` | install a systemd user timer that runs `install` daily |
 
-The timer runs `install` once a day. If Chrome is running, it exits without
-installing and the next day's activation retries the installation. Running
-`install` manually with Chrome closed is therefore the recommended update
-method. The unit records the script's absolute path, so moving the checkout
-requires re-running `timer`.
+The timer runs `install` once a day. If Chrome is running at that moment,
+`install` exits before changing anything, and the timer tries again the next
+day. Running `install` manually with Chrome closed is therefore the recommended
+way to update. The unit records the script's absolute path, so moving the
+checkout requires re-running `timer`.
 
 ### Windows
 
@@ -109,32 +112,34 @@ Then in Chrome:
 3. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\extension`
 4. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\companion`
 
-Chrome does not permit scripted installation of off-store extensions on
-Windows. See [WRITEUP.md](WRITEUP.md) for analysis of the tested automated
-deployment routes.
+Of the automated routes tested on Windows, only enterprise policy installs an
+off-store extension that Chrome leaves enabled. That route needs administrator
+rights and marks the browser as managed. [WRITEUP.md](WRITEUP.md#windows)
+compares all the routes that were tested.
 
 ## Layout
 
 ```
 ubo-lpa.py          the implementation, both platforms
-assets/             the patch payloads as .js and .html files
+assets/             the .js and .html files added to uBO and the companion
 linux/ubo-lpa.sh    launcher
 windows/ubo-lpa.ps1 launcher
-tests/e2e/          browser harness, diagnostics tests and Wine bridge source
-WRITEUP.md          technical design and Windows installation analysis
+tests/e2e/          browser harness, diagnostics tests, AF_UNIX shim for Wine
+WRITEUP.md          technical design, and why Windows needs a manual install
 ```
 
 ## End-to-end tests
 
-The browser harness exercises the native Linux path and the Windows path under
-Wine 11 or newer. Both jobs use fresh Chrome state, verify filtering and the
-companion popup, exercise the CSP boundary, and publish screenshots and logs
-even when a run fails. Linux also checks uninstall; Wine restarts Windows
-Chrome to check persistence.
+The browser harness tests the native Linux install, and the Windows install
+under Wine 11 or newer, each in a fresh Chrome profile. Both jobs check that uBO
+blocks requests, that the companion's popup shows uBO's panel and that an
+ordinary web page cannot frame the panel. They upload screenshots and logs even
+when a run fails. The Linux job also checks `uninstall`. The Wine job restarts
+Chrome to check that both extensions are still enabled.
 
 The Windows job installs the current WineHQ development build and loads both
-directories through Chrome's Win32 folder picker; it does not bypass the
-manual Windows installation route with `--load-extension`.
+directories through **Load unpacked** and Chrome's Win32 folder picker, which is
+the manual route from the Windows instructions above.
 
 See [tests/e2e/README.md](tests/e2e/README.md) for local commands and safety
 notes.
@@ -146,8 +151,8 @@ notes.
 - **uBO appears under "Chrome Apps"**, not "Extensions".
 - **uBO is patched at install time.** The edits are listed in
   [WRITEUP.md](WRITEUP.md); `check` reports when one is missing.
-- **Keep the install directory.** It holds the private keys that fix the
-  extension IDs. Without them a rebuild generates new IDs, Chrome registers
+- **Keep the install directory.** It holds the private keys that determine
+  the extension IDs. Without them a rebuild generates new IDs, Chrome registers
   different extensions, and uBO starts from defaults again. They are
   unencrypted private keys, so keep any copy private.
 - **Not affiliated with uBlock Origin.** Reproduce issues on a stock install
@@ -156,5 +161,5 @@ notes.
 ## Licence
 
 GPL-3.0, matching uBlock Origin. uBlock Origin is © Raymond Hill and is
-downloaded from its own releases at install time; no uBO code is in this
-repository.
+downloaded from its own releases at install time. This repository does not
+contain any uBO code.

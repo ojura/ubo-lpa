@@ -1,4 +1,4 @@
-# staged extension trees and downloads
+# staged extension trees, keys and downloads
 /linux/extension/
 /linux/companion/
 /windows/stage/
@@ -17,7 +17,7 @@ ubo-lpa-wine-results-*/
 /tests/e2e/wine-tcp-preload/tests/bridge_test
 /tests/e2e/wine-tcp-preload/tests/bridge_test32
 
-# editor / OS noise
+# Python bytecode, editor and OS files
 __pycache__/
 *.py[cod]
 .DS_Store

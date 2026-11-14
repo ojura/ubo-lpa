@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-ubo-lpa Windows verification probe.
+Browser test for ubo-lpa. setup-ubo-wine-harness.sh runs it against Windows
+Chrome under Wine and against Linux Chrome.
 
 Uses CDP directly through a minimal WebSocket client built on the standard
 library, without Node, npm or a browser-automation package. Requires Python 3.9
@@ -9,8 +10,8 @@ or newer.
   PROBE_MODE=install   install both extensions through the Load unpacked dialog
   PROBE_MODE=test      exercise the installed pair
 
-The assertions and most sequencing follow the original Playwright probe. Failed
-runs identified the following timing and observability requirements:
+The timing of the steps and the way the checks observe Chrome and uBO follow
+from these points:
 
   * Chrome reloads chrome://extensions after the native picker closes, so
     navigating again at that moment can remain pending indefinitely.
@@ -18,7 +19,8 @@ runs identified the following timing and observability requirements:
     extension page. A background_page target is not a reliable readiness signal
     on a constrained host.
   * uBO's panel waits on requestAnimationFrame, which Chrome suspends in a
-    hidden tab, so the companion must be foregrounded before its frame settles.
+    hidden tab, so the companion's tab must be in front for uBO's panel to
+    finish rendering.
   * Blocking is verified by a canary that must never reach the local server,
     rather than by reading the page, because uBO redirects to an empty response.
   * Clicking Load unpacked opens a modal dialog that stalls the renderer's CDP
@@ -54,9 +56,10 @@ def log(msg: str) -> None:
 
 # --- websocket client -------------------------------------------------------
 #
-# CDP needs client text frames, server text frames and ping handling. No Origin
-# header is sent, avoiding the --remote-allow-origins requirement that Chrome
-# applies to most client libraries.
+# CDP needs client text frames, server text frames and ping handling. The
+# client does not send an Origin header, because Chrome refuses DevTools
+# connections that have one unless --remote-allow-origins allows that origin.
+# Most client libraries send it, which is why they need the flag.
 
 
 class WebSocket:
@@ -151,10 +154,11 @@ class Cdp:
         self.events: list[dict] = []
 
     def wait_for_endpoint(self) -> dict:
-        # The second browser starts with uBO already installed. Compiling its
-        # filter lists under Wine can keep the browser busy while the DevTools
-        # HTTP server accepts connections without responding. Permit several
-        # minutes and report the final connection error.
+        # The second browser starts with uBO already installed. While uBO
+        # compiles its filter lists under Wine, the browser can be so busy that
+        # the DevTools HTTP server accepts connections and does not answer them.
+        # Wait up to CDP_WAIT_SECONDS (420 s by default) and report the last
+        # connection error.
         last = None
         deadline = time.time() + float(os.environ.get("CDP_WAIT_SECONDS", "420"))
         attempts = 0
@@ -189,8 +193,9 @@ class Cdp:
             try:
                 message = json.loads(self.ws.recv())
             except (socket.timeout, TimeoutError):
-                # Chrome under Wine can exceed an individual socket timeout
-                # during startup; continue until this command's deadline.
+                # During startup, Chrome under Wine can take longer than one
+                # socket timeout to reply, so keep reading until this
+                # command's deadline.
                 continue
             if message.get("id") == message_id:
                 if "error" in message:
@@ -233,7 +238,7 @@ class Cdp:
                     return
             self.drain()
             time.sleep(0.25)
-        raise ProbeError("no execution context appeared for the page")
+        raise ProbeError("the page did not get an execution context")
 
     def target_for(self, session: str) -> str | None:
         return next((t for t, s in self.sessions.items() if s == session), None)
@@ -301,7 +306,8 @@ class Cdp:
 
 
 def desktop_shot(name: str, quiet: bool = False) -> bool:
-    """Whole-screen capture, which is the useful evidence for a windowed run."""
+    """Capture the whole screen, which in a windowed run also shows Chrome's
+    window frame and native dialogs such as the folder picker."""
     path = OUT_DIR / f"{name}.png"
     if not os.environ.get("DISPLAY"):
         return False
@@ -318,9 +324,9 @@ def desktop_shot(name: str, quiet: bool = False) -> bool:
 
 def capture(cdp: Cdp, session: str, name: str, pause: float = 1.4) -> None:
     """
-    Prefers the desktop capture, which shows the browser frame itself. A
-    headless browser does not render to the display, so fall back to a page-level
-    capture rather than emitting an empty file.
+    Prefers the desktop capture, which shows the browser frame itself. Without
+    a display, or when the screen capture fails, it falls back to a CDP
+    screenshot of the page.
     """
     cdp.bring_to_front(session)
     time.sleep(pause)
@@ -338,8 +344,8 @@ def capture(cdp: Cdp, session: str, name: str, pause: float = 1.4) -> None:
 class Fixtures(http.server.BaseHTTPRequestHandler):
     """
     Serves the test pages and stands in for the advertising host, which Chrome
-    resolves here via --host-resolver-rules. The canary counter is the blocking
-    assertion: a blocked request never arrives.
+    resolves here via --host-resolver-rules. The blocking check asserts that
+    canary_hits stays at 0, since a blocked request never arrives.
     """
 
     canary_hits = 0
@@ -361,9 +367,9 @@ class Fixtures(http.server.BaseHTTPRequestHandler):
         if path == "/block":
             self._send(
                 "<!doctype html><meta charset=utf-8>"
-                "<title>Windows Chrome toolbar probe</title>"
+                "<title>uBO blocking probe</title>"
                 "<style>body{font:20px system-ui;margin:40px}</style>"
-                "<h1>uBO Windows blocking probe</h1>"
+                "<h1>uBO blocking probe</h1>"
                 "<p id=status>Requesting a known advertising URL...</p>"
                 f"<script>fetch('http://pagead2.googlesyndication.com:{port}"
                 "/canary?ubo-wine=' + Date.now())"
@@ -376,11 +382,11 @@ class Fixtures(http.server.BaseHTTPRequestHandler):
         elif path == "/hostile":
             self._send(
                 "<!doctype html><meta charset=utf-8>"
-                "<title>CSP hostile-frame regression</title>"
+                "<title>frame-ancestors test</title>"
                 "<style>body{font:18px system-ui;margin:32px;background:#f4f6fb}"
                 "iframe{width:300px;height:500px;border:5px solid #b3261e;background:#fff}"
                 "#result{font-weight:700;padding:12px;background:#fff}</style>"
-                "<h1>Ordinary HTTP framing attempt</h1>"
+                "<h1>Can an ordinary http:// page frame uBO's popup?</h1>"
                 "<p>The red box attempts to embed uBO's popup with an explicit tab ID.</p>"
                 "<p id=result>Checking frame-ancestors...</p>"
                 "<iframe id=victim src=about:blank></iframe>")
@@ -418,10 +424,11 @@ DEEP = """
 
 def first_page(cdp: Cdp) -> str:
     """
-    A tab opened directly at chrome://extensions. The browser's own startup
-    about:blank renderer frequently terminates under Wine. Attaching to that
-    renderer causes subsequent commands to reach their timeouts; creating the
-    tab at the destination avoids both that renderer and a separate navigation.
+    A tab opened directly at chrome://extensions. Under Wine, the renderer of
+    the about:blank tab that Chrome opens at startup frequently terminates, and
+    once the probe has attached to it, later commands run into their timeouts.
+    Creating the tab at chrome://extensions avoids that renderer and saves a
+    separate navigation.
     """
     return cdp.new_page("chrome://extensions/")
 
@@ -430,8 +437,9 @@ def open_extensions(cdp: Cdp, session: str) -> str:
     """
     Chrome reloads this WebUI itself once a native picker closes, so navigating
     at that moment can hang. The current URL is read from the browser's target
-    list rather than by evaluating in the page: the startup tab's renderer can
-    already have terminated; querying it would consume the full timeout.
+    list instead of by evaluating in the page, because under Wine the page's
+    renderer can already have terminated, and an evaluate would then wait out
+    the full timeout.
     """
     target_id = cdp.target_for(session)
     url = next((t.get("url", "") for t in cdp.targets() if t["id"] == target_id), "")
@@ -447,8 +455,8 @@ def open_extensions(cdp: Cdp, session: str) -> str:
 
 
 def extension_cards(cdp: Cdp, session: str) -> list[dict]:
-    """Assumes the caller has the page open; re-navigating on every read
-    reloads the WebUI underneath itself."""
+    """Assumes the caller has chrome://extensions open. Navigating there again
+    for every read would reload the WebUI each time."""
     return json.loads(cdp.evaluate(session, DEEP + """
       JSON.stringify(deepAll('extensions-item').map(item => {
         const shadow = item.shadowRoot;
@@ -487,8 +495,8 @@ def extension_diagnostic_info(cdp: Cdp, session: str) -> dict:
     Chrome 152 puts the two expected LPA manifest warnings in
     ``manifestErrors`` after Load unpacked while leaving ``installWarnings``
     empty. Older builds and other loading routes can use ``installWarnings``,
-    so both sources are retained and checked. Runtime errors are never folded
-    into that allowance.
+    so both sources are retained and checked. Runtime errors are kept apart
+    from these warnings and are never allowed.
     """
     return json.loads(cdp.evaluate(session, """
       chrome.developerPrivate.getExtensionsInfo().then(list =>
@@ -512,13 +520,16 @@ EXPECTED_UBO_MANIFEST_WARNINGS = [
 
 def unexpected_extension_diagnostics(info: dict, ubo_id: str, companion_id: str,
                                      require_expected_warnings: bool) -> dict:
-    """Return any deviation from the exact expected diagnostics contract.
+    """Return the unexpected diagnostics, keyed "<id>.warnings" and
+    "<id>.runtimeErrors". An empty dict means the check passes.
 
-    The manual Windows route must emit the two known uBO manifest warnings.
-    Linux startup loading may emit either that exact pair or no warnings. The
-    companion must remain warning-free, and either extension having a runtime
-    error is always a failure. Diagnostics for unrelated built-in extensions
-    are deliberately ignored.
+    On Windows, where uBO is installed through Load unpacked, it must show
+    exactly the two known manifest warnings. On Linux, where Chrome loads uBO
+    at startup from the entry the installer wrote into Preferences, uBO may
+    show that exact pair or no warnings at all. The companion must not have
+    any warnings, and a runtime error in either extension always fails the
+    check. Diagnostics for unrelated built-in extensions are deliberately
+    ignored.
     """
     unexpected: dict = {}
     records = {
@@ -551,7 +562,8 @@ def unexpected_extension_diagnostics(info: dict, ubo_id: str, companion_id: str,
 
 def check_extension_diagnostics(cdp: Cdp, session: str,
                                 require_expected_warnings: bool) -> None:
-    """Collect, log, and enforce the extension diagnostics contract."""
+    """Log uBO's and the companion's diagnostics, and raise ProbeError if any
+    of them are unexpected."""
     info = extension_diagnostic_info(cdp, session)
     ours = {ext_id: info.get(ext_id, []) for ext_id in (UBO_ID, COMPANION_ID)}
     log(f"EXTENSION_DIAGNOSTICS {json.dumps(ours)}")
@@ -563,9 +575,10 @@ def check_extension_diagnostics(cdp: Cdp, session: str,
 
 
 def set_dev_mode(cdp: Cdp, session: str) -> str:
-    # The toolbar renders after extensions-manager during cold I/O, and an
-    # immediate deepOne('extensions-toolbar').shadowRoot dereference threw a
-    # null TypeError during one cold run; apply the same readiness wait.
+    # On a cold start, extensions-toolbar can render after extensions-manager,
+    # and reading deepOne('extensions-toolbar').shadowRoot right away throws a
+    # TypeError on null. Wait for the toolbar's #devMode toggle, as
+    # open_extensions waits for extensions-manager.
     for _ in range(60):
         if cdp.evaluate(session, DEEP + """
           (() => { const t = deepOne('extensions-toolbar');
@@ -646,9 +659,9 @@ def load_unpacked(cdp: Cdp, session: str, windows_path: str, expected: str, labe
     last: ProbeError | None = None
     for attempt in range(3):
         # The previous load re-renders the list, and a click dispatched during
-        # that update is dropped. Wait for the button to be present and the
-        # rendering to stabilize before dispatching; the click itself cannot be
-        # acknowledged.
+        # that update is dropped. Wait for the button to be present, then one
+        # more second for the rendering to stabilize, before dispatching,
+        # because the click gets no reply that would show whether it worked.
         for _ in range(40):
             if cdp.evaluate(session, DEEP + """
                   !!(deepOne('extensions-toolbar')
@@ -672,8 +685,8 @@ def load_unpacked(cdp: Cdp, session: str, windows_path: str, expected: str, labe
         desktop_shot(f"00-{label}-picker-failed")
         raise last or ProbeError(f"{label}: the picker never appeared")
     # Confirm through the browser-level target list first. On a constrained
-    # host, uBO's filter-list compilation can terminate the extensions WebUI
-    # renderer; installation confirmation must not depend on WebUI state.
+    # host, the extensions WebUI renderer can be killed while uBO compiles its
+    # filter lists, so the install check must not depend on the WebUI.
     deadline = time.time() + 120
     while time.time() < deadline:
         if any(ext_running(cdp, expected)):
@@ -763,9 +776,10 @@ def frame_targets(cdp: Cdp, url_fragment: str) -> list[dict]:
 class Frame:
     """
     A child frame, addressed either as its own target or as an execution
-    context inside the parent. Site isolation is disabled here to keep Chrome's
-    process count (and so its memory) down under Wine, which means the uBO
-    panel is usually same-process and never appears as an iframe target.
+    context inside the parent. The harness leaves site isolation on, so the uBO
+    panel normally runs out of process and appears as an iframe target. With
+    site isolation off, Chrome can keep the panel in its parent's process, where
+    it exists only as an execution context.
     """
 
     def __init__(self, cdp: Cdp, session: str, context_id: int | None = None) -> None:
@@ -787,7 +801,7 @@ def find_frame(cdp: Cdp, parent: str, url_fragment: str, timeout: float = 45.0) 
     deadline = time.time() + timeout
     cdp.send("Runtime.enable", {}, parent)
     while time.time() < deadline:
-        # An out-of-process frame, if site isolation happens to be on.
+        # An out-of-process frame, which the panel is with site isolation on.
         for target in frame_targets(cdp, url_fragment):
             if not target["url"].startswith("chrome-error://"):
                 return Frame(cdp, cdp.attach(target["id"]))
@@ -802,7 +816,8 @@ def find_frame(cdp: Cdp, parent: str, url_fragment: str, timeout: float = 45.0) 
             aux = context.get("auxData") or {}
             if url_fragment in str(aux.get("frameId", "")):
                 return Frame(cdp, parent, context["id"])
-        # Fall back to asking the frame tree, then matching by context origin.
+        # Fall back to the frame tree: find the child frame by URL, then the
+        # context whose auxData.frameId matches that frame's ID.
         try:
             tree = cdp.send("Page.getFrameTree", {}, parent)["frameTree"]
             for child in tree.get("childFrames", []):
@@ -828,17 +843,19 @@ def install_phase(cdp: Cdp) -> None:
     session = set_dev_mode(cdp, session)
 
     # Neither test extension should be present. The browser starts without
-    # --load-extension, which retail Chrome ignores, so the dialog is the
-    # behavior under test.
+    # --load-extension, which retail Chrome ignores, so the extensions can only
+    # be installed through the Load unpacked dialog, and that is what this
+    # phase tests.
     preloaded = [c for c in extension_cards(cdp, session)
                  if c["id"] in (UBO_ID, COMPANION_ID)]
     if preloaded:
         desktop_shot("00-unexpected-preloaded")
-        raise ProbeError(f"extensions already present before the manual flow: {preloaded}")
+        raise ProbeError(f"extensions already installed before Load unpacked: {preloaded}")
 
     # Companion first. uBO starts compiling filter lists the moment it loads,
-    # and on a constrained host that competes with the WebUI renderer during a
-    # second picker interaction, which produces RESULT_CODE_KILLED.
+    # and on a constrained host that work competes with the WebUI renderer
+    # during a second picker interaction and gets the renderer killed
+    # (RESULT_CODE_KILLED).
     load_unpacked(cdp, session, COMPANION_WIN, COMPANION_ID, "companion")
     load_unpacked(cdp, session, EXT_WIN, UBO_ID, "ubo")
 
@@ -856,7 +873,7 @@ def install_phase(cdp: Cdp) -> None:
         installed |= {i for i in (UBO_ID, COMPANION_ID) if ext_running(cdp, i)}
     if len(installed) != 2:
         desktop_shot("00-install-incomplete")
-        raise ProbeError("both extensions were not installed by the manual UI flow")
+        raise ProbeError("Load unpacked did not install both extensions")
     check_extension_diagnostics(cdp, session, require_expected_warnings=True)
     try:
         capture(cdp, session, "10-windows-load-unpacked-complete")
@@ -871,7 +888,7 @@ def install_phase(cdp: Cdp) -> None:
 def test_phase(cdp: Cdp) -> None:
     log(f"CDP_VERSION {json.dumps(cdp.version)}")
     # The same assertions run against Linux Chrome, where the platform check
-    # would be wrong; the harness sets this for its Wine runs.
+    # would be wrong, so the harness sets EXPECT_WINDOWS=0 for its Linux run.
     if os.environ.get("EXPECT_WINDOWS", "1") == "1":
         if "Windows NT" not in cdp.version.get("User-Agent", ""):
             raise ProbeError("Windows user agent missing")
@@ -881,8 +898,8 @@ def test_phase(cdp: Cdp) -> None:
     # One read is normally sufficient. On a resource-constrained host (one CPU,
     # swapping, and uBO recompiling filter lists at startup), the WebUI can
     # render before the extension system populates it, so the first read may be
-    # empty. Poll for both IDs before evaluating persistence; retain the first
-    # read in the log to record the timing condition.
+    # empty. Poll for both IDs before checking that they survived the restart,
+    # and keep the first read in the log so it shows whether it was empty.
     cards = extension_cards(cdp, session)
     log(f"STARTUP_EXTENSION_CARDS {json.dumps(cards)}")
 
@@ -899,13 +916,14 @@ def test_phase(cdp: Cdp) -> None:
         log(f"STARTUP_EXTENSION_CARDS_SETTLED {json.dumps(cards)}")
     for label, ext_id in (("uBO", UBO_ID), ("companion", COMPANION_ID)):
         if not have(ext_id):
-            raise ProbeError(f"{label} did not persist across the restart as enabled")
+            raise ProbeError(f"{label} is missing or disabled after the restart")
     capture(cdp, session, "20-extensions-page", 1.8)
     check_extension_diagnostics(
         cdp, session,
         require_expected_warnings=os.environ.get("EXPECT_WINDOWS", "1") == "1")
 
-    # The manifest must carry exactly the expected frame-ancestors allowlist.
+    # The manifest's CSP must have exactly one frame-ancestors directive, which
+    # allows 'self' and the companion.
     manifest = json.loads((Path(EXT_HOST) / "manifest.json").read_text(encoding="utf-8"))
     csp = manifest.get("content_security_policy")
     if isinstance(csp, dict):
@@ -916,14 +934,15 @@ def test_phase(cdp: Cdp) -> None:
     tokens = directives[0].split()[1:] if len(directives) == 1 else []
     if len(directives) != 1 or sorted(tokens) != sorted(
             ["'self'", f"chrome-extension://{COMPANION_ID}"]):
-        raise ProbeError("manifest lacks the expected frame-ancestors companion allowlist")
+        raise ProbeError("manifest CSP lacks the expected frame-ancestors directive")
 
     # uBO's dashboard serves as the extension page used to query the background
     # page.
     time.sleep(12)
     dashboard = cdp.new_page()
-    # CDP can report a completed navigation to an error page. Such a document
-    # has no chrome.runtime, so explicitly verify the extension APIs.
+    # CDP can report a navigation as complete when it ended on an error page.
+    # Such a document has no chrome.runtime, so explicitly verify the extension
+    # APIs.
     for attempt in range(8):
         try:
             cdp.navigate(dashboard, f"chrome-extension://{UBO_ID}/dashboard.html")
@@ -958,7 +977,8 @@ def test_phase(cdp: Cdp) -> None:
     site_tab = tab_id_for(cdp, companion, f"http://127.0.0.1:{port}/block")
 
     # uBO's panel waits on requestAnimationFrame, which Chrome suspends in a
-    # hidden tab, so the companion must be foregrounded for its frame to finish.
+    # hidden tab, so the companion's tab must be in front for uBO's panel to
+    # finish rendering.
     cdp.bring_to_front(companion)
     panel = find_frame(cdp, companion, "popup-fenix.html")
     for _ in range(60):
@@ -983,7 +1003,7 @@ def test_phase(cdp: Cdp) -> None:
         raise ProbeError(f"advertising canary reached the server {Fixtures.canary_hits} time(s)")
     if not (badge.get("ok") and badge.get("ready") and badge.get("netFiltering")
             and badge.get("pageBlocked", 0) >= 1):
-        raise ProbeError("uBO did not authoritatively report the request as blocked")
+        raise ProbeError("uBO's badge bridge did not report the request as blocked")
     capture(cdp, companion, "40-companion-popup-document-in-tab", 1.5)
 
     # showIconBadge is honoured by the bridge.
@@ -995,7 +1015,8 @@ def test_phase(cdp: Cdp) -> None:
     if badge_off.get("showBadge") is not False:
         raise ProbeError("badge bridge ignored showIconBadge=false")
 
-    # frame-ancestors: an ordinary HTTP origin must not be able to frame it.
+    # frame-ancestors: an ordinary HTTP origin must not be able to frame uBO's
+    # popup.
     hostile = cdp.new_page()
     cdp.navigate(hostile, f"http://127.0.0.1:{port}/hostile")
     hostile_tab = tab_id_for(cdp, companion, f"http://127.0.0.1:{port}/hostile")
@@ -1027,10 +1048,10 @@ def test_phase(cdp: Cdp) -> None:
     find_frame(cdp, companion, "popup-fenix.html")
     log("CSP_POSITIVE_CONTROL ok")
 
-    # The browser-owned action popup, which is a different surface from the
-    # popup.html tab used above: that tab proves the document works, not that
-    # the toolbar button opens it. The direct tab is closed first so target
-    # detection below cannot match it instead.
+    # Next comes the action popup, which the browser opens itself. The
+    # popup.html tab used above proves that the document works, but not that
+    # the toolbar button opens it. That tab is closed first so the target
+    # search below cannot match it instead.
     cdp.close_page(companion)
     time.sleep(1)
     worker = next((t for t in cdp.targets()
@@ -1105,8 +1126,8 @@ def main() -> int:
             print(f"error: unknown PROBE_MODE: {mode}", file=sys.stderr)
             return 2
     except Exception as exc:  # noqa: BLE001
-        # The location matters as much as the message here: the same timeout
-        # surfaces from several call sites, so the traceback identifies its source.
+        # Several call sites raise the same timeout message, so the traceback is
+        # printed too, to show which one failed.
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         desktop_shot("00-failure-state")

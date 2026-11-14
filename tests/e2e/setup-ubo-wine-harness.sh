@@ -3,24 +3,26 @@ set -Eeuo pipefail
 
 HARNESS_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
-# Fresh-profile Windows-Chrome-under-Wine test harness for ubo-lpa.
+# Browser test harness for ubo-lpa. By default it runs the Windows installer
+# and retail Windows Chrome under Wine; --linux runs the Linux installer
+# against the host's Chrome instead. Both modes start from a fresh profile.
 #
-# The input is copied/extracted into a fresh work directory. The project source
-# is never edited. The Windows installer writes only inside a disposable Wine
-# prefix, and screenshots/logs are written to --out.
+# The input is copied or extracted into a fresh work directory. The project
+# source is never edited. The Windows installer writes only inside a disposable
+# Wine prefix, and screenshots and logs are written to --out.
 #
-# SECURITY: run this only on source you trust.  It executes the supplied Python
-# installer under Wine, and a normal Wine prefix exposes the host filesystem as
-# Z:.  The fresh prefix/profile prevent test-state contamination; they are not
-# an operating-system security boundary.
+# SECURITY: run this only on trusted source. It executes the supplied Python
+# installer, and under Wine a normal prefix exposes the host filesystem as Z:.
+# The fresh prefix and profile keep leftover state from affecting the test;
+# they are not an operating-system security boundary.
 
 usage() {
     cat <<'USAGE'
 Usage:
   setup-ubo-wine-harness.sh [--linux] [--out DIR] [--work DIR] ZIP_OR_SOURCE_DIR
 
-  --linux     Test the Linux install path against host Chrome in a fresh
-              profile, instead of the Windows path under Wine.
+  --linux     Test the Linux installer against host Chrome in a fresh
+              profile, instead of the Windows installer under Wine.
 
 Options:
   --out DIR   New output directory for screenshots and logs.
@@ -28,17 +30,19 @@ Options:
   --work DIR  New work directory. It must not already exist.
               Default: a directory made by mktemp under /tmp
   -h, --help  Show this help.
-  --prep-container       Free container disk before running: npm, pip, uv and
-                         puppeteer caches, APT archives and lists; optionally
-                         purge packages named in UBO_PREP_PURGE_PACKAGES; then
-                         report the biggest installed packages left.
+  --prep-container       Free disk space in a disposable container before the
+                         run: delete the npm, pip, uv and puppeteer caches and
+                         APT's archives and package lists, purge the packages
+                         in UBO_PREP_PURGE_PACKAGES, turn on swap when
+                         UBO_PREP_SWAP_MB asks for more than is active, then
+                         list the biggest installed packages left.
   --prep-container-only  Do the container prep and exit.
 
 Environment overrides:
-  WINE_BIN=/path/to/wine
+  WINE_BIN=/path/to/wine                use this Wine 11+ instead of searching
   WINE_TCP_SHIM=auto|always|never       (default: auto)
   WINE_TCP_SHIM_SOURCE_DIR=/path/to/src  use alternate shim source
-  ALLOW_UNTESTED_WINE_SHIM=1            allow the Wine-11-specific shim on 12+
+  ALLOW_UNTESTED_WINE_SHIM=1            use the shim on Wine 12+ (tested on 11)
   CHROME_MSI=/path/to/chrome.msi        use a cached Chrome enterprise MSI
   CHROME_MSI_URL=https://...            override the enterprise MSI URL
   CHROME_MSI_SHA256=...                 require a specific MSI build
@@ -56,12 +60,13 @@ Notes:
   * Unless SKIP_HOST_PACKAGES=1 is set, the script refreshes APT metadata and
     installs its host dependencies. Automatic WineHQ setup supports Debian and
     Ubuntu; WINE_BIN can supply Wine 11+ elsewhere.
-  * Run only trusted input. Wine's Z: drive exposes the host filesystem; the
-    dedicated prefix is test-state isolation, not a security sandbox.
-  * The functional run uses retail Google Chrome for Windows, extracted from
-    the official enterprise MSI. Google publishes no stable checksum for the
-    current MSI; the SHA-256 of the downloaded file is recorded, and
-    CHROME_MSI_SHA256 can pin a build.
+  * Run only trusted input. Wine's Z: drive exposes the host filesystem, so
+    the dedicated prefix only keeps test state separate and is not a security
+    sandbox.
+  * The Windows run uses retail Google Chrome for Windows, extracted from the
+    official enterprise MSI. Google does not publish a stable checksum for the
+    current MSI, so the harness records the SHA-256 of the downloaded file.
+    Set CHROME_MSI_SHA256 to require a specific build.
 USAGE
 }
 
@@ -75,10 +80,11 @@ note() {
 }
 
 prep_container() {
-    # Frees disposable-container disk before a run. Everything removed is a
-    # cache or regenerable metadata; package purges apply only to names supplied
-    # explicitly by the operator. This function is self-contained because it
-    # runs before the main script's root and APT configuration is available.
+    # Frees disk space in a disposable container before a run. Everything it
+    # removes is a cache or metadata that can be downloaded again, and it
+    # purges only the packages the operator names. The function sets up sudo
+    # and calls apt-get itself because it runs before the main script sets
+    # ROOT and defines apt_run.
     local -a root=()
     if ((EUID != 0)); then
         command -v sudo >/dev/null || die '--prep-container requires root or sudo'
@@ -87,8 +93,8 @@ prep_container() {
     local before after home_dir
     before=$(df --output=avail -BM / | tail -1 | tr -dc '0-9')
     note "Container prep: ${before} MB available; clearing caches."
-    # npm, pip, uv and puppeteer keep per-user caches. Sweep the active home
-    # and root's home because sudo can change which one is live.
+    # npm, pip, uv and puppeteer keep per-user caches. Clear both $HOME and
+    # /root, because sudo can change which home a tool wrote its cache to.
     for home_dir in "$HOME" /root; do
         [[ -d "$home_dir" ]] || continue
         rm -rf -- "$home_dir/.npm" "$home_dir/.cache/pip" \
@@ -99,9 +105,10 @@ prep_container() {
     "${root[@]}" sh -c 'rm -rf /var/lib/apt/lists/*' 2>/dev/null || true
     if [[ -n "${UBO_PREP_SWAP_MB:-}" && "${UBO_PREP_SWAP_MB}" != 0 ]]; then
         # Swap activation is kernel state and does not survive a container
-        # checkpoint/restore, while the swapfile itself does; reactivate it when
-        # the operator names a target. Wine-mode Chrome was OOM-killed on this
-        # container class without it.
+        # checkpoint and restore, but the swapfile does. So when
+        # UBO_PREP_SWAP_MB asks for more swap than is active, create the
+        # swapfile if needed and turn it on. Without swap, Chrome under Wine
+        # was OOM-killed in the containers this was measured in.
         local swap_now swap_file=/var/tmp/ubo-lpa-prep-swapfile
         swap_now=$(awk '/^SwapTotal:/ {print int($2 / 1024)}' /proc/meminfo)
         if ((swap_now >= UBO_PREP_SWAP_MB)); then
@@ -223,7 +230,8 @@ mkdir -- "$LOG_DIR"
 cat >"$WORK_DIR/probe.py" <<'PYPROBE'
 #!/usr/bin/env python3
 """
-ubo-lpa Windows verification probe.
+Browser test for ubo-lpa. setup-ubo-wine-harness.sh runs it against Windows
+Chrome under Wine and against Linux Chrome.
 
 Uses CDP directly through a minimal WebSocket client built on the standard
 library, without Node, npm or a browser-automation package. Requires Python 3.9
@@ -232,8 +240,8 @@ or newer.
   PROBE_MODE=install   install both extensions through the Load unpacked dialog
   PROBE_MODE=test      exercise the installed pair
 
-The assertions and most sequencing follow the original Playwright probe. Failed
-runs identified the following timing and observability requirements:
+The timing of the steps and the way the checks observe Chrome and uBO follow
+from these points:
 
   * Chrome reloads chrome://extensions after the native picker closes, so
     navigating again at that moment can remain pending indefinitely.
@@ -241,7 +249,8 @@ runs identified the following timing and observability requirements:
     extension page. A background_page target is not a reliable readiness signal
     on a constrained host.
   * uBO's panel waits on requestAnimationFrame, which Chrome suspends in a
-    hidden tab, so the companion must be foregrounded before its frame settles.
+    hidden tab, so the companion's tab must be in front for uBO's panel to
+    finish rendering.
   * Blocking is verified by a canary that must never reach the local server,
     rather than by reading the page, because uBO redirects to an empty response.
   * Clicking Load unpacked opens a modal dialog that stalls the renderer's CDP
@@ -277,9 +286,10 @@ def log(msg: str) -> None:
 
 # --- websocket client -------------------------------------------------------
 #
-# CDP needs client text frames, server text frames and ping handling. No Origin
-# header is sent, avoiding the --remote-allow-origins requirement that Chrome
-# applies to most client libraries.
+# CDP needs client text frames, server text frames and ping handling. The
+# client does not send an Origin header, because Chrome refuses DevTools
+# connections that have one unless --remote-allow-origins allows that origin.
+# Most client libraries send it, which is why they need the flag.
 
 
 class WebSocket:
@@ -374,10 +384,11 @@ class Cdp:
         self.events: list[dict] = []
 
     def wait_for_endpoint(self) -> dict:
-        # The second browser starts with uBO already installed. Compiling its
-        # filter lists under Wine can keep the browser busy while the DevTools
-        # HTTP server accepts connections without responding. Permit several
-        # minutes and report the final connection error.
+        # The second browser starts with uBO already installed. While uBO
+        # compiles its filter lists under Wine, the browser can be so busy that
+        # the DevTools HTTP server accepts connections and does not answer them.
+        # Wait up to CDP_WAIT_SECONDS (420 s by default) and report the last
+        # connection error.
         last = None
         deadline = time.time() + float(os.environ.get("CDP_WAIT_SECONDS", "420"))
         attempts = 0
@@ -412,8 +423,9 @@ class Cdp:
             try:
                 message = json.loads(self.ws.recv())
             except (socket.timeout, TimeoutError):
-                # Chrome under Wine can exceed an individual socket timeout
-                # during startup; continue until this command's deadline.
+                # During startup, Chrome under Wine can take longer than one
+                # socket timeout to reply, so keep reading until this
+                # command's deadline.
                 continue
             if message.get("id") == message_id:
                 if "error" in message:
@@ -456,7 +468,7 @@ class Cdp:
                     return
             self.drain()
             time.sleep(0.25)
-        raise ProbeError("no execution context appeared for the page")
+        raise ProbeError("the page did not get an execution context")
 
     def target_for(self, session: str) -> str | None:
         return next((t for t, s in self.sessions.items() if s == session), None)
@@ -524,7 +536,8 @@ class Cdp:
 
 
 def desktop_shot(name: str, quiet: bool = False) -> bool:
-    """Whole-screen capture, which is the useful evidence for a windowed run."""
+    """Capture the whole screen, which in a windowed run also shows Chrome's
+    window frame and native dialogs such as the folder picker."""
     path = OUT_DIR / f"{name}.png"
     if not os.environ.get("DISPLAY"):
         return False
@@ -541,9 +554,9 @@ def desktop_shot(name: str, quiet: bool = False) -> bool:
 
 def capture(cdp: Cdp, session: str, name: str, pause: float = 1.4) -> None:
     """
-    Prefers the desktop capture, which shows the browser frame itself. A
-    headless browser does not render to the display, so fall back to a page-level
-    capture rather than emitting an empty file.
+    Prefers the desktop capture, which shows the browser frame itself. Without
+    a display, or when the screen capture fails, it falls back to a CDP
+    screenshot of the page.
     """
     cdp.bring_to_front(session)
     time.sleep(pause)
@@ -561,8 +574,8 @@ def capture(cdp: Cdp, session: str, name: str, pause: float = 1.4) -> None:
 class Fixtures(http.server.BaseHTTPRequestHandler):
     """
     Serves the test pages and stands in for the advertising host, which Chrome
-    resolves here via --host-resolver-rules. The canary counter is the blocking
-    assertion: a blocked request never arrives.
+    resolves here via --host-resolver-rules. The blocking check asserts that
+    canary_hits stays at 0, since a blocked request never arrives.
     """
 
     canary_hits = 0
@@ -584,9 +597,9 @@ class Fixtures(http.server.BaseHTTPRequestHandler):
         if path == "/block":
             self._send(
                 "<!doctype html><meta charset=utf-8>"
-                "<title>Windows Chrome toolbar probe</title>"
+                "<title>uBO blocking probe</title>"
                 "<style>body{font:20px system-ui;margin:40px}</style>"
-                "<h1>uBO Windows blocking probe</h1>"
+                "<h1>uBO blocking probe</h1>"
                 "<p id=status>Requesting a known advertising URL...</p>"
                 f"<script>fetch('http://pagead2.googlesyndication.com:{port}"
                 "/canary?ubo-wine=' + Date.now())"
@@ -599,11 +612,11 @@ class Fixtures(http.server.BaseHTTPRequestHandler):
         elif path == "/hostile":
             self._send(
                 "<!doctype html><meta charset=utf-8>"
-                "<title>CSP hostile-frame regression</title>"
+                "<title>frame-ancestors test</title>"
                 "<style>body{font:18px system-ui;margin:32px;background:#f4f6fb}"
                 "iframe{width:300px;height:500px;border:5px solid #b3261e;background:#fff}"
                 "#result{font-weight:700;padding:12px;background:#fff}</style>"
-                "<h1>Ordinary HTTP framing attempt</h1>"
+                "<h1>Can an ordinary http:// page frame uBO's popup?</h1>"
                 "<p>The red box attempts to embed uBO's popup with an explicit tab ID.</p>"
                 "<p id=result>Checking frame-ancestors...</p>"
                 "<iframe id=victim src=about:blank></iframe>")
@@ -641,10 +654,11 @@ DEEP = """
 
 def first_page(cdp: Cdp) -> str:
     """
-    A tab opened directly at chrome://extensions. The browser's own startup
-    about:blank renderer frequently terminates under Wine. Attaching to that
-    renderer causes subsequent commands to reach their timeouts; creating the
-    tab at the destination avoids both that renderer and a separate navigation.
+    A tab opened directly at chrome://extensions. Under Wine, the renderer of
+    the about:blank tab that Chrome opens at startup frequently terminates, and
+    once the probe has attached to it, later commands run into their timeouts.
+    Creating the tab at chrome://extensions avoids that renderer and saves a
+    separate navigation.
     """
     return cdp.new_page("chrome://extensions/")
 
@@ -653,8 +667,9 @@ def open_extensions(cdp: Cdp, session: str) -> str:
     """
     Chrome reloads this WebUI itself once a native picker closes, so navigating
     at that moment can hang. The current URL is read from the browser's target
-    list rather than by evaluating in the page: the startup tab's renderer can
-    already have terminated; querying it would consume the full timeout.
+    list instead of by evaluating in the page, because under Wine the page's
+    renderer can already have terminated, and an evaluate would then wait out
+    the full timeout.
     """
     target_id = cdp.target_for(session)
     url = next((t.get("url", "") for t in cdp.targets() if t["id"] == target_id), "")
@@ -670,8 +685,8 @@ def open_extensions(cdp: Cdp, session: str) -> str:
 
 
 def extension_cards(cdp: Cdp, session: str) -> list[dict]:
-    """Assumes the caller has the page open; re-navigating on every read
-    reloads the WebUI underneath itself."""
+    """Assumes the caller has chrome://extensions open. Navigating there again
+    for every read would reload the WebUI each time."""
     return json.loads(cdp.evaluate(session, DEEP + """
       JSON.stringify(deepAll('extensions-item').map(item => {
         const shadow = item.shadowRoot;
@@ -710,8 +725,8 @@ def extension_diagnostic_info(cdp: Cdp, session: str) -> dict:
     Chrome 152 puts the two expected LPA manifest warnings in
     ``manifestErrors`` after Load unpacked while leaving ``installWarnings``
     empty. Older builds and other loading routes can use ``installWarnings``,
-    so both sources are retained and checked. Runtime errors are never folded
-    into that allowance.
+    so both sources are retained and checked. Runtime errors are kept apart
+    from these warnings and are never allowed.
     """
     return json.loads(cdp.evaluate(session, """
       chrome.developerPrivate.getExtensionsInfo().then(list =>
@@ -735,13 +750,16 @@ EXPECTED_UBO_MANIFEST_WARNINGS = [
 
 def unexpected_extension_diagnostics(info: dict, ubo_id: str, companion_id: str,
                                      require_expected_warnings: bool) -> dict:
-    """Return any deviation from the exact expected diagnostics contract.
+    """Return the unexpected diagnostics, keyed "<id>.warnings" and
+    "<id>.runtimeErrors". An empty dict means the check passes.
 
-    The manual Windows route must emit the two known uBO manifest warnings.
-    Linux startup loading may emit either that exact pair or no warnings. The
-    companion must remain warning-free, and either extension having a runtime
-    error is always a failure. Diagnostics for unrelated built-in extensions
-    are deliberately ignored.
+    On Windows, where uBO is installed through Load unpacked, it must show
+    exactly the two known manifest warnings. On Linux, where Chrome loads uBO
+    at startup from the entry the installer wrote into Preferences, uBO may
+    show that exact pair or no warnings at all. The companion must not have
+    any warnings, and a runtime error in either extension always fails the
+    check. Diagnostics for unrelated built-in extensions are deliberately
+    ignored.
     """
     unexpected: dict = {}
     records = {
@@ -774,7 +792,8 @@ def unexpected_extension_diagnostics(info: dict, ubo_id: str, companion_id: str,
 
 def check_extension_diagnostics(cdp: Cdp, session: str,
                                 require_expected_warnings: bool) -> None:
-    """Collect, log, and enforce the extension diagnostics contract."""
+    """Log uBO's and the companion's diagnostics, and raise ProbeError if any
+    of them are unexpected."""
     info = extension_diagnostic_info(cdp, session)
     ours = {ext_id: info.get(ext_id, []) for ext_id in (UBO_ID, COMPANION_ID)}
     log(f"EXTENSION_DIAGNOSTICS {json.dumps(ours)}")
@@ -786,9 +805,10 @@ def check_extension_diagnostics(cdp: Cdp, session: str,
 
 
 def set_dev_mode(cdp: Cdp, session: str) -> str:
-    # The toolbar renders after extensions-manager during cold I/O, and an
-    # immediate deepOne('extensions-toolbar').shadowRoot dereference threw a
-    # null TypeError during one cold run; apply the same readiness wait.
+    # On a cold start, extensions-toolbar can render after extensions-manager,
+    # and reading deepOne('extensions-toolbar').shadowRoot right away throws a
+    # TypeError on null. Wait for the toolbar's #devMode toggle, as
+    # open_extensions waits for extensions-manager.
     for _ in range(60):
         if cdp.evaluate(session, DEEP + """
           (() => { const t = deepOne('extensions-toolbar');
@@ -869,9 +889,9 @@ def load_unpacked(cdp: Cdp, session: str, windows_path: str, expected: str, labe
     last: ProbeError | None = None
     for attempt in range(3):
         # The previous load re-renders the list, and a click dispatched during
-        # that update is dropped. Wait for the button to be present and the
-        # rendering to stabilize before dispatching; the click itself cannot be
-        # acknowledged.
+        # that update is dropped. Wait for the button to be present, then one
+        # more second for the rendering to stabilize, before dispatching,
+        # because the click gets no reply that would show whether it worked.
         for _ in range(40):
             if cdp.evaluate(session, DEEP + """
                   !!(deepOne('extensions-toolbar')
@@ -895,8 +915,8 @@ def load_unpacked(cdp: Cdp, session: str, windows_path: str, expected: str, labe
         desktop_shot(f"00-{label}-picker-failed")
         raise last or ProbeError(f"{label}: the picker never appeared")
     # Confirm through the browser-level target list first. On a constrained
-    # host, uBO's filter-list compilation can terminate the extensions WebUI
-    # renderer; installation confirmation must not depend on WebUI state.
+    # host, the extensions WebUI renderer can be killed while uBO compiles its
+    # filter lists, so the install check must not depend on the WebUI.
     deadline = time.time() + 120
     while time.time() < deadline:
         if any(ext_running(cdp, expected)):
@@ -986,9 +1006,10 @@ def frame_targets(cdp: Cdp, url_fragment: str) -> list[dict]:
 class Frame:
     """
     A child frame, addressed either as its own target or as an execution
-    context inside the parent. Site isolation is disabled here to keep Chrome's
-    process count (and so its memory) down under Wine, which means the uBO
-    panel is usually same-process and never appears as an iframe target.
+    context inside the parent. The harness leaves site isolation on, so the uBO
+    panel normally runs out of process and appears as an iframe target. With
+    site isolation off, Chrome can keep the panel in its parent's process, where
+    it exists only as an execution context.
     """
 
     def __init__(self, cdp: Cdp, session: str, context_id: int | None = None) -> None:
@@ -1010,7 +1031,7 @@ def find_frame(cdp: Cdp, parent: str, url_fragment: str, timeout: float = 45.0) 
     deadline = time.time() + timeout
     cdp.send("Runtime.enable", {}, parent)
     while time.time() < deadline:
-        # An out-of-process frame, if site isolation happens to be on.
+        # An out-of-process frame, which the panel is with site isolation on.
         for target in frame_targets(cdp, url_fragment):
             if not target["url"].startswith("chrome-error://"):
                 return Frame(cdp, cdp.attach(target["id"]))
@@ -1025,7 +1046,8 @@ def find_frame(cdp: Cdp, parent: str, url_fragment: str, timeout: float = 45.0) 
             aux = context.get("auxData") or {}
             if url_fragment in str(aux.get("frameId", "")):
                 return Frame(cdp, parent, context["id"])
-        # Fall back to asking the frame tree, then matching by context origin.
+        # Fall back to the frame tree: find the child frame by URL, then the
+        # context whose auxData.frameId matches that frame's ID.
         try:
             tree = cdp.send("Page.getFrameTree", {}, parent)["frameTree"]
             for child in tree.get("childFrames", []):
@@ -1051,17 +1073,19 @@ def install_phase(cdp: Cdp) -> None:
     session = set_dev_mode(cdp, session)
 
     # Neither test extension should be present. The browser starts without
-    # --load-extension, which retail Chrome ignores, so the dialog is the
-    # behavior under test.
+    # --load-extension, which retail Chrome ignores, so the extensions can only
+    # be installed through the Load unpacked dialog, and that is what this
+    # phase tests.
     preloaded = [c for c in extension_cards(cdp, session)
                  if c["id"] in (UBO_ID, COMPANION_ID)]
     if preloaded:
         desktop_shot("00-unexpected-preloaded")
-        raise ProbeError(f"extensions already present before the manual flow: {preloaded}")
+        raise ProbeError(f"extensions already installed before Load unpacked: {preloaded}")
 
     # Companion first. uBO starts compiling filter lists the moment it loads,
-    # and on a constrained host that competes with the WebUI renderer during a
-    # second picker interaction, which produces RESULT_CODE_KILLED.
+    # and on a constrained host that work competes with the WebUI renderer
+    # during a second picker interaction and gets the renderer killed
+    # (RESULT_CODE_KILLED).
     load_unpacked(cdp, session, COMPANION_WIN, COMPANION_ID, "companion")
     load_unpacked(cdp, session, EXT_WIN, UBO_ID, "ubo")
 
@@ -1079,7 +1103,7 @@ def install_phase(cdp: Cdp) -> None:
         installed |= {i for i in (UBO_ID, COMPANION_ID) if ext_running(cdp, i)}
     if len(installed) != 2:
         desktop_shot("00-install-incomplete")
-        raise ProbeError("both extensions were not installed by the manual UI flow")
+        raise ProbeError("Load unpacked did not install both extensions")
     check_extension_diagnostics(cdp, session, require_expected_warnings=True)
     try:
         capture(cdp, session, "10-windows-load-unpacked-complete")
@@ -1094,7 +1118,7 @@ def install_phase(cdp: Cdp) -> None:
 def test_phase(cdp: Cdp) -> None:
     log(f"CDP_VERSION {json.dumps(cdp.version)}")
     # The same assertions run against Linux Chrome, where the platform check
-    # would be wrong; the harness sets this for its Wine runs.
+    # would be wrong, so the harness sets EXPECT_WINDOWS=0 for its Linux run.
     if os.environ.get("EXPECT_WINDOWS", "1") == "1":
         if "Windows NT" not in cdp.version.get("User-Agent", ""):
             raise ProbeError("Windows user agent missing")
@@ -1104,8 +1128,8 @@ def test_phase(cdp: Cdp) -> None:
     # One read is normally sufficient. On a resource-constrained host (one CPU,
     # swapping, and uBO recompiling filter lists at startup), the WebUI can
     # render before the extension system populates it, so the first read may be
-    # empty. Poll for both IDs before evaluating persistence; retain the first
-    # read in the log to record the timing condition.
+    # empty. Poll for both IDs before checking that they survived the restart,
+    # and keep the first read in the log so it shows whether it was empty.
     cards = extension_cards(cdp, session)
     log(f"STARTUP_EXTENSION_CARDS {json.dumps(cards)}")
 
@@ -1122,13 +1146,14 @@ def test_phase(cdp: Cdp) -> None:
         log(f"STARTUP_EXTENSION_CARDS_SETTLED {json.dumps(cards)}")
     for label, ext_id in (("uBO", UBO_ID), ("companion", COMPANION_ID)):
         if not have(ext_id):
-            raise ProbeError(f"{label} did not persist across the restart as enabled")
+            raise ProbeError(f"{label} is missing or disabled after the restart")
     capture(cdp, session, "20-extensions-page", 1.8)
     check_extension_diagnostics(
         cdp, session,
         require_expected_warnings=os.environ.get("EXPECT_WINDOWS", "1") == "1")
 
-    # The manifest must carry exactly the expected frame-ancestors allowlist.
+    # The manifest's CSP must have exactly one frame-ancestors directive, which
+    # allows 'self' and the companion.
     manifest = json.loads((Path(EXT_HOST) / "manifest.json").read_text(encoding="utf-8"))
     csp = manifest.get("content_security_policy")
     if isinstance(csp, dict):
@@ -1139,14 +1164,15 @@ def test_phase(cdp: Cdp) -> None:
     tokens = directives[0].split()[1:] if len(directives) == 1 else []
     if len(directives) != 1 or sorted(tokens) != sorted(
             ["'self'", f"chrome-extension://{COMPANION_ID}"]):
-        raise ProbeError("manifest lacks the expected frame-ancestors companion allowlist")
+        raise ProbeError("manifest CSP lacks the expected frame-ancestors directive")
 
     # uBO's dashboard serves as the extension page used to query the background
     # page.
     time.sleep(12)
     dashboard = cdp.new_page()
-    # CDP can report a completed navigation to an error page. Such a document
-    # has no chrome.runtime, so explicitly verify the extension APIs.
+    # CDP can report a navigation as complete when it ended on an error page.
+    # Such a document has no chrome.runtime, so explicitly verify the extension
+    # APIs.
     for attempt in range(8):
         try:
             cdp.navigate(dashboard, f"chrome-extension://{UBO_ID}/dashboard.html")
@@ -1181,7 +1207,8 @@ def test_phase(cdp: Cdp) -> None:
     site_tab = tab_id_for(cdp, companion, f"http://127.0.0.1:{port}/block")
 
     # uBO's panel waits on requestAnimationFrame, which Chrome suspends in a
-    # hidden tab, so the companion must be foregrounded for its frame to finish.
+    # hidden tab, so the companion's tab must be in front for uBO's panel to
+    # finish rendering.
     cdp.bring_to_front(companion)
     panel = find_frame(cdp, companion, "popup-fenix.html")
     for _ in range(60):
@@ -1206,7 +1233,7 @@ def test_phase(cdp: Cdp) -> None:
         raise ProbeError(f"advertising canary reached the server {Fixtures.canary_hits} time(s)")
     if not (badge.get("ok") and badge.get("ready") and badge.get("netFiltering")
             and badge.get("pageBlocked", 0) >= 1):
-        raise ProbeError("uBO did not authoritatively report the request as blocked")
+        raise ProbeError("uBO's badge bridge did not report the request as blocked")
     capture(cdp, companion, "40-companion-popup-document-in-tab", 1.5)
 
     # showIconBadge is honoured by the bridge.
@@ -1218,7 +1245,8 @@ def test_phase(cdp: Cdp) -> None:
     if badge_off.get("showBadge") is not False:
         raise ProbeError("badge bridge ignored showIconBadge=false")
 
-    # frame-ancestors: an ordinary HTTP origin must not be able to frame it.
+    # frame-ancestors: an ordinary HTTP origin must not be able to frame uBO's
+    # popup.
     hostile = cdp.new_page()
     cdp.navigate(hostile, f"http://127.0.0.1:{port}/hostile")
     hostile_tab = tab_id_for(cdp, companion, f"http://127.0.0.1:{port}/hostile")
@@ -1250,10 +1278,10 @@ def test_phase(cdp: Cdp) -> None:
     find_frame(cdp, companion, "popup-fenix.html")
     log("CSP_POSITIVE_CONTROL ok")
 
-    # The browser-owned action popup, which is a different surface from the
-    # popup.html tab used above: that tab proves the document works, not that
-    # the toolbar button opens it. The direct tab is closed first so target
-    # detection below cannot match it instead.
+    # Next comes the action popup, which the browser opens itself. The
+    # popup.html tab used above proves that the document works, but not that
+    # the toolbar button opens it. That tab is closed first so the target
+    # search below cannot match it instead.
     cdp.close_page(companion)
     time.sleep(1)
     worker = next((t for t in cdp.targets()
@@ -1328,8 +1356,8 @@ def main() -> int:
             print(f"error: unknown PROBE_MODE: {mode}", file=sys.stderr)
             return 2
     except Exception as exc:  # noqa: BLE001
-        # The location matters as much as the message here: the same timeout
-        # surfaces from several call sites, so the traceback identifies its source.
+        # Several call sites raise the same timeout message, so the traceback is
+        # printed too, to show which one failed.
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         desktop_shot("00-failure-state")
@@ -1353,12 +1381,14 @@ CHROME_PID=
 USE_SHIM=0
 
 # Set the private prefix before installing the EXIT trap. Once WINE_SERVER is
-# discovered, even an early validation failure may ask it to stop; that cleanup
-# must never inherit the caller's prefix or fall back to ~/.wine.
+# set, the trap runs wineserver -k on every exit, including a failed check
+# early on, and that must stop the private prefix's server, never the one for
+# the caller's WINEPREFIX or ~/.wine.
 export WINEPREFIX=$PREFIX
 export WINEARCH=win64
-# Overridable: WINEDEBUG=-all hides Wine's err: messages, which provide the
-# available diagnostics when a Chrome child terminates inside Wine.
+# WINEDEBUG defaults to -all, which hides Wine's err: messages. Override it
+# when a Chrome child process dies inside Wine, because those messages are
+# Wine's diagnostics for it.
 export WINEDEBUG=${WINEDEBUG:--all}
 export WINEDLLOVERRIDES='winemenubuilder.exe=d;mscoree,mshtml='
 
@@ -1374,8 +1404,8 @@ reap_pid_bounded() {
 
 cleanup_processes() {
     local status=$?
-    # Chrome's per-process log provides renderer-failure diagnostics. Collect
-    # it after failed and successful runs.
+    # chrome_debug.log collects the log output of every Chrome process and
+    # records why renderers failed. Copy it after failed and successful runs.
     if [[ -n "${PROFILE:-}" && -f "$PROFILE/chrome_debug.log" && -n "${LOG_DIR:-}" ]]; then
         cp -f "$PROFILE/chrome_debug.log" "$LOG_DIR/chrome_debug.log" 2>/dev/null || true
     fi
@@ -1463,7 +1493,7 @@ apt_with_retry() {
     if ! grep -Eqi '(_apt|setgroups|setresuid|permission denied.*(partial|archives))' "$log"; then
         return "$status"
     fi
-    note 'APT could not start or write through its _apt worker; retrying with -o APT::Sandbox::User=root and a run-local archive cache.'
+    note 'APT could not switch to its _apt user, or _apt could not write the archive cache in the work directory; retrying with -o APT::Sandbox::User=root.'
     APT_SANDBOX_RELAXED=1
     apt_run "$@"
 }
@@ -1491,9 +1521,9 @@ else
     python3 -m pip --version >/dev/null || die 'python3 pip is required for Windows wheel download'
 fi
 
-# The probe uses CDP directly through Python's standard library, so there is no
-# Node, npm, Playwright, or browser-automation package to install. Python 3.9+
-# is sufficient.
+# The probe talks to Chrome over CDP using only Python's standard library, so
+# it needs Python 3.9 or newer and does not need Node, npm, Playwright or any
+# other browser-automation package.
 PYTHON_CMD=$(command -v python3 2>/dev/null || true)
 [[ -n "$PYTHON_CMD" ]] || die 'python3 is required'
 "$PYTHON_CMD" - <<'PYCHECK' || die "python3 3.9+ is required, found $("$PYTHON_CMD" --version)"
@@ -1521,7 +1551,7 @@ choose_existing_wine() {
     if [[ -n "${WINE_BIN:-}" ]]; then
         candidate=$(realpath -- "$WINE_BIN")
         major=$(wine_major "$candidate") || die "cannot execute WINE_BIN: $candidate"
-        ((major >= 11)) || die "WINE_BIN is $major; Wine 11 or newer is required"
+        ((major >= 11)) || die "WINE_BIN is Wine $major; Wine 11 or newer is required"
         WINE_BIN=$candidate
         return 0
     fi
@@ -1560,9 +1590,10 @@ install_winehq() {
         "/etc/apt/sources.list.d/winehq-$codename.sources"
     # WineHQ splits the launchers and the 64-bit runtime into separate packages.
     # In particular, wine-stable-amd64 does not provide
-    # /opt/wine-stable/bin/wine.  Install the supported metapackage so that the
-    # launcher, wineserver, 64-bit runtime, and its required WoW64/i386 side are
-    # version-locked together on a genuinely clean host.
+    # /opt/wine-stable/bin/wine. Install the winehq-stable metapackage, which
+    # brings the launcher, wineserver, the 64-bit runtime and the i386
+    # packages it needs for WoW64, all at the same version, even on a host
+    # without any Wine packages.
     "${ROOT[@]}" dpkg --add-architecture i386
     apt_with_retry update
     apt_with_retry install -y --install-recommends winehq-stable
@@ -1575,7 +1606,7 @@ elif ! choose_existing_wine; then
         die 'SKIP_HOST_PACKAGES=1 requires an existing Wine 11+ installation or WINE_BIN'
     install_winehq
     unset WINE_BIN
-    choose_existing_wine || die 'WineHQ installation completed but no Wine 11+ binary was found'
+    choose_existing_wine || die 'installed WineHQ, but neither /opt/wine-stable/bin/wine nor wine on PATH is Wine 11 or newer'
 fi
 if ((LINUX_MODE == 0)); then
 WINE_VERSION=$("$WINE_BIN" --version)
@@ -1583,9 +1614,10 @@ WINE_MAJOR=$(wine_major "$WINE_BIN")
 WINE_BIN_DIR=$(dirname -- "$WINE_BIN")
 WINE_SERVER=$WINE_BIN_DIR/wineserver
 [[ -x "$WINE_SERVER" ]] || die "matching wineserver is missing beside WINE_BIN: $WINE_SERVER"
-# Keep a relocated WineHQ tree internally consistent too.  The automatic
-# /opt/wine-stable installation does not need these hints, but WINE_BIN may
-# legitimately point at the same package extracted under another prefix.
+# Put WINE_BIN's directory first on PATH and its lib directories on
+# LD_LIBRARY_PATH, so a WineHQ build extracted under another prefix uses its
+# own wineserver and libraries. The /opt/wine-stable install does not need
+# this, but WINE_BIN may point at such a relocated tree.
 export PATH=$WINE_BIN_DIR:$PATH
 WINE_ROOT=$(dirname -- "$WINE_BIN_DIR")
 WINE_LIBRARY_PATH=
@@ -1600,9 +1632,9 @@ fi
 note "Using $WINE_VERSION at $WINE_BIN"
 fi
 
-# Build from the checked-in shim source. The disposable copy keeps compiler
-# outputs out of the repository while preserving an explicit source override
-# for bridge development.
+# Build the shim from a copy of its checked-in source in the work directory,
+# so compiler output stays out of the repository. WINE_TCP_SHIM_SOURCE_DIR
+# builds from another source tree instead, for working on the shim.
 if ((LINUX_MODE == 0)); then
 SHIM_SOURCE_DIR=${WINE_TCP_SHIM_SOURCE_DIR:-$HARNESS_DIR/wine-tcp-preload}
 [[ -d "$SHIM_SOURCE_DIR" ]] ||
@@ -1614,8 +1646,9 @@ done
 mkdir -- "$SHIM_DIR"
 cp -a -- "$SHIM_SOURCE_DIR"/. "$SHIM_DIR"/
 make -C "$SHIM_DIR" preload
-# glibc expands $LIB for each process, selecting the matching x86-64 or i386
-# preload library without exposing either loader to the wrong ELF class.
+# glibc's loader expands $LIB per process, so 64-bit processes load the x86-64
+# build of the preload library and 32-bit ones the i386 build; neither loader
+# is handed a library of the wrong ELF class.
 SHIM=$SHIM_DIR/preload/\$LIB/libwine-tcp-preload.so
 
 AF_UNIX_OK=0
@@ -1643,9 +1676,9 @@ if ((!AF_UNIX_OK && !USE_SHIM)); then
 fi
 if ((USE_SHIM)); then
     if ((WINE_MAJOR != 11)) && [[ ${ALLOW_UNTESTED_WINE_SHIM:-0} != 1 ]]; then
-        die "the preload caller filter is certified for Wine 11, not $WINE_MAJOR; use Wine 11 or explicitly set ALLOW_UNTESTED_WINE_SHIM=1"
+        die "the shim's check for wineserver and ntdll callers has only been tested on Wine 11, not Wine $WINE_MAJOR; use Wine 11 or set ALLOW_UNTESTED_WINE_SHIM=1"
     fi
-    note 'Running the preload bridge integration test before using the bridge with Wine.'
+    note 'Running the shim integration test (make check) before Wine uses the shim.'
     make -C "$SHIM_DIR" check | tee "$LOG_DIR/shim-check.log"
     note 'Pathname AF_UNIX translation enabled only for wineserver and Wine ntdll.'
 else
@@ -1673,9 +1706,10 @@ wine_exec_bounded() {
 }
 
 wine_exec_background() {
-    # This helper is only called as a background job. exec preserves $! as the
-    # Wine loader PID while applying the same preload policy as foreground
-    # calls, which makes timeout and stuck-process handling deterministic.
+    # This helper is only called as a background job. exec keeps $! equal to
+    # the Wine loader's PID and sets LD_PRELOAD the same way as the foreground
+    # helpers, so the caller can poll and kill the loader itself instead of a
+    # subshell.
     if ((USE_SHIM)); then
         exec env LD_PRELOAD="$SHIM${LD_PRELOAD:+:$LD_PRELOAD}" "$WINE_BIN" "$@"
     else
@@ -1733,25 +1767,27 @@ start_xvfb() {
     die 'could not allocate an Xvfb display'
 }
 
-# Chrome under Wine is dominated by per-process cost: measured by PSS with one
-# blank tab, 3309 MB stock and 2510 MB with the spare renderer suppressed and
-# the GPU process merged, against a few hundred MB for the same browser natively.
-# Adding uBO's filter engine exhausts a 4 GB host, after which Chrome discards
-# tabs and renderers terminate with RESULT_CODE_KILLED during the run.
+# Most of Chrome's memory under Wine is a fixed cost per process. With one
+# blank tab, its PSS measured 3309 MB with default flags, and 2510 MB with the
+# spare renderer suppressed and the GPU process merged; the same browser uses a
+# few hundred MB natively. Adding uBO's filter engine exhausts a 4 GB host,
+# after which Chrome discards tabs and renderers terminate with
+# RESULT_CODE_KILLED during the run.
 #
-# This check only verifies that sufficient memory is available. Renderer
-# termination also occurred with gigabytes free, so memory exhaustion was not
-# its sole cause. The threshold reflects measured process footprint. Swap was
-# not used during the measurement runs.
+# This check only verifies that enough memory is available. Renderers also
+# terminated with gigabytes free, so running out of memory was not the only
+# cause. The threshold comes from the measured footprint of Chrome's
+# processes, in runs without swap.
 if ((LINUX_MODE)); then
-    # Native Chrome costs a few hundred MB; the figure below is a Wine number.
+    # Native Chrome uses a few hundred MB, far less than the Wine figures above.
     REQUIRED_AVAILABLE_MB=${REQUIRED_AVAILABLE_MB:-1200}
 else
     REQUIRED_AVAILABLE_MB=${REQUIRED_AVAILABLE_MB:-3300}
-    # Combined figure from the ablation record: kernel-OOM-killed with no
-    # swap and again with 2 GB (the startup spike filled it to 0 free);
-    # successful at ~3.6 GB available + 3 GB swap. The 6500 MB combined
-    # threshold includes a small lower margin.
+    # This threshold applies to MemAvailable plus SwapFree. In the measured
+    # runs, the kernel OOM-killed Chrome with no swap, and again with 2 GB of
+    # swap, which the startup spike used up completely. The run succeeded with
+    # about 3.6 GB available plus 3 GB of swap, and 6500 MB is a little below
+    # that sum.
     REQUIRED_COMBINED_MB=${REQUIRED_COMBINED_MB:-6500}
 fi
 AVAILABLE_MB=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo)
@@ -1766,22 +1802,26 @@ fi
 if ((LINUX_MODE == 0)) && [[ -n "$AVAILABLE_MB" && -n "$SWAP_FREE_MB" ]] \
     && ((AVAILABLE_MB + SWAP_FREE_MB < REQUIRED_COMBINED_MB)); then
     die "MemAvailable + SwapFree is $((AVAILABLE_MB + SWAP_FREE_MB)) MB; the
-       Windows run requires approximately ${REQUIRED_COMBINED_MB} MB combined. On this
-       container class Chrome's renderers were kernel-OOM-killed with no swap
-       and again with 2 GB (the startup spike filled it); ~3.6 GB available
-       plus a 3 GB swapfile is the measured successful configuration. Configure swap (a
-       swapfile, or UBO_PREP_SWAP_MB=3072 with --prep-container) or set
-       REQUIRED_COMBINED_MB to override."
+       Windows run requires approximately ${REQUIRED_COMBINED_MB} MB combined.
+       In the containers where this was measured, the kernel OOM-killed
+       Chrome's renderers with no swap, and again with 2 GB of swap, which the
+       startup spike filled. The run succeeded with about 3.6 GB available plus
+       a 3 GB swapfile. Configure swap (a swapfile, or UBO_PREP_SWAP_MB=3072
+       with --prep-container) or set REQUIRED_COMBINED_MB to override."
 fi
 note "Memory available: ${AVAILABLE_MB} MB (+ ${SWAP_FREE_MB:-0} MB swap free)."
 
 start_xvfb
 
 if ((LINUX_MODE)); then
-    # The Linux install path is the one that edits Chrome's Preferences
-    # directly, so it is exercised against a temporary profile tree. The
-    # installer discovers profiles under $XDG_CONFIG_HOME, which is pointed at
-    # the work directory. Nothing outside it is touched.
+    # The Linux installer is the one that edits Chrome's Preferences directly,
+    # so it runs against a temporary profile tree. The installer finds profiles
+    # under $XDG_CONFIG_HOME, which points into the work directory, so its
+    # profile edits stay there. Two things still act outside the work
+    # directory: the installer's lock file in $XDG_RUNTIME_DIR, and the
+    # uninstall step, which runs systemctl --user daemon-reload and disables
+    # and deletes any ubo-lpa-update timer units in ~/.config/systemd/user,
+    # including those of a real install.
     CHROME_BIN=${CHROME_BIN:-$(command -v google-chrome || command -v google-chrome-stable \
         || command -v chromium || command -v chromium-browser || true)}
     [[ -n "$CHROME_BIN" ]] || die 'no google-chrome or chromium on PATH; set CHROME_BIN'
@@ -1814,9 +1854,9 @@ if ((LINUX_MODE)); then
         about:blank >"$LOG_DIR/chrome-profile-init.log" 2>&1 || true
     [[ -f "$LINUX_PROFILE/Default/Preferences" ]] || die 'Chrome did not create a profile'
 
-    # The installer does not edit Preferences while a browser is running because
-    # Chrome rewrites that file on exit and would undo the injection. Wait for
-    # the profile-initialization browser to exit.
+    # The installer refuses to edit Preferences while a browser is running,
+    # because Chrome rewrites that file on exit and would undo the installer's
+    # changes. Wait for the headless Chrome that created the profile to exit.
     for _ in $(seq 1 60); do
         pgrep -x chrome >/dev/null 2>&1 || pgrep -x chromium >/dev/null 2>&1 || break
         sleep 1
@@ -1840,12 +1880,13 @@ if ((LINUX_MODE)); then
     rm -f -- "$LINUX_PROFILE"/Singleton* "$LINUX_PROFILE"/DevToolsActivePort
     CDP_PORT=$("$PYTHON_CMD" -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()")
 
-    # Windowed, not headless: the probe records whole-screen captures of the
-    # browser, and a headless browser does not render to the display.
-    # One fresh profile throughout. The XDG redirect is lifted only for this
-    # launch: it exists so the installer discovers the temporary profile, but
-    # while it is set Chrome computes that same directory as its own default
-    # user-data-dir and then rejects --remote-debugging-port.
+    # Chrome runs in a window, not headless: the probe records whole-screen
+    # captures of the browser, and a headless browser does not render to the
+    # display. The same fresh profile is used for the whole test.
+    # XDG_CONFIG_HOME is unset for this launch only. It is set so the installer
+    # finds the temporary profile, but while it is set, Chrome computes that
+    # same directory as its own default user-data-dir and then rejects
+    # --remote-debugging-port.
     env -u XDG_CONFIG_HOME "$CHROME_BIN" --user-data-dir="$LINUX_PROFILE" \
         --no-first-run --no-default-browser-check --disable-gpu --no-sandbox \
         --disable-component-update --disable-features=SpareRendererForSitePerProcess \
@@ -1877,9 +1918,9 @@ if ((LINUX_MODE)); then
         env PROBE_MODE=test EXPECT_WINDOWS=0 "$PYTHON_CMD" "$WORK_DIR/probe.py" 2>&1 \
         | tee "$LOG_DIR/probe-linux.log"
 
-    # The probe closes the browser after a successful run. A failed run can
-    # leave it active, and the installer does not edit Preferences while Chrome
-    # is running.
+    # The probe ends with Browser.close but ignores an error from it, so Chrome
+    # can still be running here, and the installer does not edit Preferences
+    # while Chrome is running.
     note 'Closing Chrome before the uninstall check.'
     kill "$CHROME_PID" >/dev/null 2>&1 || true
     reap_pid_bounded "$CHROME_PID"
@@ -1921,11 +1962,11 @@ fi
 
 mkdir -p -- "$PREFIX"
 note 'Initializing a fresh x64 Wine prefix.'
-# wineboot -u hangs indefinitely inside setupapi's InstallHinfSection while the
-# registry hives are already written. Detect that state once the hives exist and
-# the setup process is the only remaining operation, then terminate the process.
-# This reduces the observed initialization delay from about three minutes to
-# about fifteen seconds.
+# wineboot -u hangs indefinitely inside setupapi's InstallHinfSection after the
+# registry hives are written. Detect that state once the hives exist and the
+# setup process has stopped making progress, then terminate it. This reduces
+# the observed initialization delay from about three minutes to about fifteen
+# seconds.
 wine_exec_background wineboot -u >"$LOG_DIR/wineboot.log" 2>&1 &
 WINEBOOT_PID=$!
 wineboot_done=0
@@ -1948,10 +1989,11 @@ for _ in $(seq 1 90); do
     [[ -f "$PREFIX/drive_c/windows/system32/kernel32.dll" ]] || hives=0
     # The presence of an individual file is also insufficient: after a cold
     # restore, the same error recurred with kernel32 present but its
-    # dependencies still being copied. File-count quiescence alone also
-    # produced one false positive during an I/O stall. The process is treated
-    # as inactive only when two signals remain unchanged across three samples
-    # (~6 s): the prefix file count and the setupapi process CPU time.
+    # dependencies still being copied. Waiting for the file count alone to
+    # stop changing also gave one false positive, during an I/O stall. So the
+    # process counts as inactive only when the number of files in the prefix
+    # and the CPU time of the setupapi process both stay unchanged for three
+    # checks in a row (~6 s).
     if ((hives)); then
         stuck=
         for proc_dir in /proc/[0-9]*; do
@@ -2056,7 +2098,8 @@ wine_exec_bounded 30s "$PYTHON_EXE" -c \
     | tee "$LOG_DIR/python-cryptography-version.log"
 
 cat >"$WORK_DIR/stage_windows.py" <<'PY'
-"""Run ubo-lpa's Windows installer path against a host-downloaded uBO ZIP."""
+"""Run ubo-lpa's Windows installer, taking uBO from the release ZIP on the host
+instead of downloading it."""
 from __future__ import annotations
 
 import importlib.util
@@ -2090,7 +2133,7 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 if not module.IS_WINDOWS:
-    raise SystemExit("stage driver must run under Windows Python")
+    raise SystemExit("stage_windows.py must run under Windows Python")
 
 
 def resolve_latest_tag():
@@ -2136,13 +2179,13 @@ PY
 PROJECT_WIN=$(wine_exec_bounded 30s winepath -w "$PROJECT_DIR" | tr -d '\r')
 STAGE_DRIVER_WIN=$(wine_exec_bounded 30s winepath -w "$WORK_DIR/stage_windows.py" | tr -d '\r')
 UBO_RELEASE_ARCHIVE_WIN=$(wine_exec_bounded 30s winepath -w "$UBO_RELEASE_ARCHIVE" | tr -d '\r')
-note 'Running the project Windows staging path into C:\ubo-lpa-stage.'
+note 'Installing into C:\ubo-lpa-stage with the Windows installer under Wine.'
 UBO_LPA_PROJECT=$PROJECT_WIN \
 UBO_LPA_STAGE='C:\ubo-lpa-stage' \
 UBO_RELEASE_ARCHIVE=$UBO_RELEASE_ARCHIVE_WIN \
 UBO_RELEASE_VERSION=$UBO_RELEASE_VERSION \
     wine_exec_bounded 5m "$PYTHON_EXE" "$STAGE_DRIVER_WIN" | tee "$LOG_DIR/ubo-windows-stage.log"
-[[ -f "$STAGE_HOST/.state.json" ]] || die 'Windows staging state was not produced'
+[[ -f "$STAGE_HOST/.state.json" ]] || die 'the Windows installer did not write C:\ubo-lpa-stage\.state.json'
 read -r UBO_ID COMPANION_ID < <(
     STATE_FILE=$STAGE_HOST/.state.json python3 - <<'PY'
 import json
@@ -2164,24 +2207,25 @@ COMPANION_HOST=$STAGE_HOST/companion
 EXT_WIN=$(wine_exec_bounded 30s winepath -w "$EXT_HOST" | tr -d '\r')
 COMPANION_WIN=$(wine_exec_bounded 30s winepath -w "$COMPANION_HOST" | tr -d '\r')
 [[ "$EXT_WIN" == C:\\* && "$COMPANION_WIN" == C:\\* ]] || \
-    die "staging did not resolve through Wine's C: drive"
+    die "winepath did not map the staged directories to Wine's C: drive"
 export EXT_WIN COMPANION_WIN EXT_HOST COMPANION_HOST
-note "Staged dynamic IDs: uBO=$UBO_ID companion=$COMPANION_ID"
+note "Windows IDs: uBO=$UBO_ID companion=$COMPANION_ID"
 
 # Retail Google Chrome for Windows, extracted from the official enterprise MSI.
 #
 # Chrome for Testing accepts --load-extension; retail Chrome ignores it with
 #   "--load-extension is not allowed in Google Chrome, ignoring."
-# Retail Chrome requires this harness to use the Load unpacked dialog, the
-# supported manual installation route on Windows.
+# With retail Chrome, the harness has to install through the Load unpacked
+# dialog, which is also the manual installation route the README gives for
+# Windows.
 #
 # The MSI is a four-layer package:
 #   MSI -> Binary.GoogleChromeInstaller -> updater.7z
 #       -> <version>_chrome_installer.exe -> chrome.7z -> Chrome-bin/
 #
-# Google publishes no stable checksum for the current enterprise MSI, so the
-# SHA-256 of the downloaded file is recorded rather than asserted. Set
-# CHROME_MSI_SHA256 to pin a specific build.
+# Google does not publish a stable checksum for the current enterprise MSI, so
+# the SHA-256 of the downloaded file is recorded rather than asserted. Set
+# CHROME_MSI_SHA256 to require a specific build.
 if [[ -n "${CHROME_MSI:-}" ]]; then
     CHROME_MSI=$(realpath -- "$CHROME_MSI")
 else
@@ -2224,8 +2268,9 @@ mkdir -p -- "$PROFILE"
 PROFILE_WIN=$(wine_exec_bounded 30s winepath -w "$PROFILE" | tr -d '\r')
 
 # Locate and focus the Wine implementation of the Win32 common folder dialog by
-# control ID before xdotool injects the path. This avoids assumptions about its
-# translated title, DPI, window position, focus, or control-ready timing.
+# control ID before xdotool types the path. That way the harness does not
+# depend on the dialog's translated title, the DPI, the window position, which
+# window has focus, or how long the controls take to become ready.
 cat >"$WORK_DIR/select_folder.py" <<'PY'
 import ctypes
 import sys
@@ -2233,7 +2278,7 @@ import time
 from ctypes import wintypes
 
 if len(sys.argv) != 2:
-    raise SystemExit("usage: select_folder.py WINDOWS_PATH")
+    raise SystemExit("usage: select_folder.py WINDOWS_PATH | --wait-closed")
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -2324,9 +2369,9 @@ export SCREENSHOT_DIR=$OUT_DIR
 export OUT_DIR
 export STAGE_HOST PROJECT_DIR PROFILE
 
-# Both browser launches share one wineserver lifecycle. Restarting wineserver
-# between launches was required only by an earlier picker implementation and can
-# fail in restricted AF_UNIX environments before Chrome starts.
+# Both Chrome launches use the same wineserver. Restarting it between them is
+# not needed, and where pathname AF_UNIX sockets are restricted, the restart can
+# fail before Chrome starts.
 
 
 launch_chrome() {
@@ -2339,16 +2384,17 @@ launch_chrome() {
         --disable-background-networking
         --disable-breakpad
         --disable-component-update
-        # Chrome 152's separate network utility process repeatedly crashes in
-        # a fresh shimmed Wine prefix. Keep it in-process; extension, renderer,
-        # blocking, popup, and CSP behavior are still exercised in Windows Chrome.
-        # DisableTabDiscarding is included in the same flag because a second
-        # --enable-features value would replace the first. The discarding policy is
-        # only installed when that feature is off
+        # In a fresh Wine prefix with the shim preloaded, Chrome 152's network
+        # service keeps crashing in its separate utility process, so run it in
+        # the browser process. Extension, renderer, blocking, popup and CSP
+        # behavior is still tested in Windows Chrome. DisableTabDiscarding goes
+        # in the same flag because a second --enable-features value would
+        # replace the first. Chrome only sets up tab discarding when that
+        # feature is off
         # (chrome_browser_main_extra_parts_performance_manager.cc), and under
-        # Wine it discards the startup about:blank and the probe's current page,
-        # which chrome_debug.log records as
-        # "Tab Killed:" with an empty URL.
+        # Wine it discards the startup about:blank and the probe's current
+        # page, which chrome_debug.log records as "Tab Killed:" with an empty
+        # URL.
         --enable-features=NetworkServiceInProcess2,DisableTabDiscarding
         --disable-session-crashed-bubble
         --hide-crash-restore-bubble
@@ -2356,8 +2402,8 @@ launch_chrome() {
         --no-default-browser-check
         --lang=en-US
         --enable-logging=stderr
-        # The file form additionally captures every child process into
-        # chrome_debug.log, which provides renderer-termination diagnostics.
+        # Without a value, --enable-logging also writes the log of every child
+        # process to chrome_debug.log, which records why renderers terminated.
         --enable-logging
         --log-level=0
         --remote-debugging-address=127.0.0.1
@@ -2367,23 +2413,23 @@ launch_chrome() {
         --window-size=1240,820
         --force-device-scale-factor=1
         '--host-resolver-rules=MAP pagead2.googlesyndication.com 127.0.0.1'
-        # No --load-extension: retail Chrome ignores it, and loading through the
-        # flag would skip the Load unpacked dialog used by the supported manual
-        # installation route.
+        # --load-extension is left out: retail Chrome ignores it, and loading
+        # through the flag would skip the Load unpacked dialog, which is how the
+        # extensions are installed by hand on Windows.
     )
     if [[ "${UBO_WINE_LOWMEM:-0}" == 1 ]]; then
-        # Measured flag-ablation runs identified this as the only required flag
-        # on ~4 GB hosts with 3 GB swap. Baseline runs and runs limited only by
-        # renderer count and site isolation repeatedly exhausted memory. This
-        # flag completed the full suite three times, including without
-        # DisableTabDiscarding. Site isolation and renderer count therefore
-        # retain their defaults in low-memory runs.
+        # Flag-ablation runs on ~4 GB hosts with 3 GB swap found this to be the
+        # only flag needed. Runs with default flags, and runs that only limited
+        # the renderer count and site isolation, repeatedly ran out of memory.
+        # With this flag, the full suite passed three times, including without
+        # DisableTabDiscarding. Low-memory runs therefore leave site isolation
+        # and the renderer count at their defaults.
         chrome_args+=(--enable-low-end-device-mode)
         note 'UBO_WINE_LOWMEM=1: --enable-low-end-device-mode applied.'
     fi
     if [[ -n "${UBO_CHROME_EXTRA_FLAGS:-}" ]]; then
-        # Space-separated extra Chrome flags for experiments. They are excluded
-        # from the default path so the baseline launch remains under test.
+        # Space-separated extra Chrome flags for experiments. They are added
+        # only when set, so a default run still tests the standard launch flags.
         local -a extra_flags
         read -r -a extra_flags <<<"$UBO_CHROME_EXTRA_FLAGS"
         chrome_args+=("${extra_flags[@]}")
@@ -2397,9 +2443,10 @@ launch_chrome() {
         if ((attempt > 1)); then
             note 'Retrying Chrome once with the same Wine prefix.'
         fi
-        # Start the Wine loader directly so $! is its PID, not the PID of an
-        # asynchronous shell-function subshell. This makes timeout cleanup
-        # deterministic and prevents a live Chrome from retaining the profile.
+        # Start the Wine loader directly so $! is its PID, not the PID of a
+        # background subshell running a shell function. The timeout cleanup then
+        # kills the loader itself and does not leave a live Chrome holding the
+        # profile.
         if ((USE_SHIM)); then
             env LD_PRELOAD="$SHIM${LD_PRELOAD:+:$LD_PRELOAD}" \
                 "$WINE_BIN" "${chrome_args[@]}" >>"$log" 2>&1 &
@@ -2434,8 +2481,8 @@ wait_chrome_exit() {
     done
     if kill -0 "$CHROME_PID" >/dev/null 2>&1; then
         note 'Chrome did not exit within 30 seconds after Browser.close; terminating its Wine launcher.'
-        # Chrome may outlive the loader. Terminate its Windows process tree
-        # without recycling the prefix between sessions.
+        # Chrome may outlive the loader. Kill its Windows processes with
+        # taskkill and keep the prefix and wineserver for the next session.
         wine_exec_bounded 10s taskkill /f /im chrome.exe >/dev/null 2>&1 || true
         kill "$CHROME_PID" >/dev/null 2>&1 || true
     fi
@@ -2443,10 +2490,10 @@ wait_chrome_exit() {
     CHROME_PID=
 }
 
-# Two sessions are used. The first starts without the test extensions and
-# installs both through the Load unpacked dialog, the supported manual route in
-# retail Chrome on Windows. The second restarts the browser to confirm that the
-# unpacked extensions persisted, then exercises them.
+# Chrome runs twice. The first session starts without the test extensions and
+# installs both through the Load unpacked dialog, the manual installation route
+# for retail Chrome on Windows. The second launch confirms that Chrome kept both
+# unpacked extensions, then exercises them.
 note 'Launching retail Windows Chrome without the test extensions.'
 launch_chrome "$LOG_DIR/chrome-install-session.log"
 timeout --foreground --signal=TERM --kill-after=30s 8m \
@@ -2482,8 +2529,8 @@ Chrome MSI SHA-256: $(sha256sum "$CHROME_MSI" 2>/dev/null | awk '{print $1}')
 Chrome executable SHA-256: $(sha256sum "$CHROME_EXE" | awk '{print $1}')
 uBO ID: $UBO_ID
 Companion ID: $COMPANION_ID
-Wine prefix/work directory retained at: $WORK_DIR
+Work directory with the Wine prefix, retained at: $WORK_DIR
 EOF
 
 note "PASS. Screenshots and logs: $OUT_DIR"
-note "Disposable prefix/work directory retained for inspection: $WORK_DIR"
+note "Disposable work directory, with the Wine prefix, retained for inspection: $WORK_DIR"
