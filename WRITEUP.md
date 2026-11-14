@@ -20,6 +20,22 @@ edits, so a given upstream release and key pair always produce the same result.
 Running `install` again rebuilds a current, consistent installation only after
 a confirmation prompt. `ubo-lpa.py check` verifies the result.
 
+On Linux, an update replaces the extension and companion directories and leaves
+each profile's entries as they are. The install path and the keys stay the
+same, so the IDs and paths in `Preferences` remain valid. Chrome reads an
+unpacked extension's manifest from disk at every start
+(`ShouldReloadExtensionManifest()` in `installed_loader.cc`), and it does not
+disable an unpacked extension whose new version asks for more permissions
+(`CheckPermissionsIncrease()` in `chrome_extension_registrar_delegate.cc`).
+Updates therefore run while Chrome is open. Until Chrome restarts, the running
+uBO background page keeps the old code, while pages opened in the meantime,
+such as the popup and the dashboard, load the new files.
+
+The installer edits a profile only when its entries need changing, and only
+while its browser is closed. It decides that from the `SingletonLock` symlink
+Chrome keeps in its user data directory while it runs, which points to
+`<hostname>-<pid>`.
+
 The payloads live in `assets/` as files, with `__UBO_ID__`, `__COMP_ID__` and
 `__RESIZE_MSG__` substituted at install time.
 
@@ -124,7 +140,10 @@ Requests that uBO blocks after the tab has finished loading only show up in the
 count at the next refresh.
 
 A `runtime.onMessageExternal` listener responds to `{what:'uboBadge', tabId}`
-with `µb.requestStats.blockedCount` and `pageStore.counts.blocked.any`. The
+with `µb.requestStats.blockedCount` and `pageStore.counts.blocked.any`, and
+whether filtering is on for the page. uBO 1.76 replaced
+`pageStore.getNetFilteringSwitch()` with `pageStore.isTrusted()`, which is true
+when filtering is off; the bridge uses whichever the installed uBO has. The
 companion's service worker requests these values on `tabs.onActivated` and
 `onUpdated`, then sets its own badge for that tab.
 
@@ -386,10 +405,11 @@ python3 ubo-lpa.py check
 
 ### uBO is installed but does not block requests
 
-**Chrome must be closed during install (Linux).** It rewrites `Preferences` on
-exit and overwrites the injection. The installer does not run while Chrome is
-active, but Chrome started during installation can still overwrite the file.
-Close Chrome and run `install` again.
+**The profile was left out because Chrome was running (Linux).** Chrome writes
+`Preferences` back on exit, so the installer only adds the extensions to a
+profile while its browser is closed, and names the profiles it left out. Chrome
+started during an install can still overwrite the file. Close Chrome and run
+`install` again.
 
 **Filter lists are still downloading.** A new profile fetches uBO's initial
 filter-list data. Wait a minute and reload the page.

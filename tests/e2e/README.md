@@ -5,11 +5,12 @@ in a fresh Wine prefix for the Windows mode, and then checks the result in the
 browser. It has two modes:
 
 - `--linux` runs the native Linux installer against a temporary Chrome
-  profile, then checks the install, request blocking, the popup, the CSP that
-  keeps other pages from framing uBO's panel, and uninstall.
+  profile, starts Chrome, runs an update while it is open, then checks request
+  blocking, the popup, the CSP that keeps other pages from framing uBO's panel,
+  and uninstall.
 - the default mode runs the Windows installer under Wine 11 or newer, loads
   both unpacked directories through Chrome's Win32 folder picker, restarts
-  Chrome, and runs the same browser checks except uninstall.
+  Chrome, and runs the same browser checks except the update and uninstall.
 
 Both modes take whole-desktop screenshots and retain logs in the directory
 passed with `--out`, and record the SHA-256 hashes of the input and the harness

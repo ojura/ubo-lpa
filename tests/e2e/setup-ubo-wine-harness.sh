@@ -1514,11 +1514,18 @@ if [[ ${SKIP_HOST_PACKAGES:-0} != 1 ]]; then
         "${HOST_DEPENDENCIES[@]}"
 else
     note 'SKIP_HOST_PACKAGES=1: checking the preinstalled host toolchain.'
-    for executable in curl gcc make xz unzip 7z msiinfo python3 Xvfb xauth \
-        xdpyinfo xdotool import mcookie sha256sum tar timeout; do
+    REQUIRED_COMMANDS=(curl xz unzip python3 Xvfb xauth xdpyinfo xdotool import
+        mcookie sha256sum tar timeout)
+    # The Windows mode also builds the shim and unpacks Chrome's MSI.
+    if ((LINUX_MODE == 0)); then
+        REQUIRED_COMMANDS+=(gcc make 7z msiinfo)
+    fi
+    for executable in "${REQUIRED_COMMANDS[@]}"; do
         command -v "$executable" >/dev/null || die "required host command is missing: $executable"
     done
-    python3 -m pip --version >/dev/null || die 'python3 pip is required for Windows wheel download'
+    if ((LINUX_MODE == 0)); then
+        python3 -m pip --version >/dev/null || die 'python3 pip is required for Windows wheel download'
+    fi
 fi
 
 # The probe talks to Chrome over CDP using only Python's standard library, so
@@ -1817,11 +1824,10 @@ if ((LINUX_MODE)); then
     # The Linux installer is the one that edits Chrome's Preferences directly,
     # so it runs against a temporary profile tree. The installer finds profiles
     # under $XDG_CONFIG_HOME, which points into the work directory, so its
-    # profile edits stay there. Two things still act outside the work
-    # directory: the installer's lock file in $XDG_RUNTIME_DIR, and the
-    # uninstall step, which runs systemctl --user daemon-reload and disables
-    # and deletes any ubo-lpa-update timer units in ~/.config/systemd/user,
-    # including those of a real install.
+    # profile edits stay there. The installer's lock file is still created in
+    # $XDG_RUNTIME_DIR. The uninstall step reads any ubo-lpa-update timer unit
+    # in ~/.config/systemd/user, and leaves it in place because it updates a
+    # different install directory.
     CHROME_BIN=${CHROME_BIN:-$(command -v google-chrome || command -v google-chrome-stable \
         || command -v chromium || command -v chromium-browser || true)}
     [[ -n "$CHROME_BIN" ]] || die 'no google-chrome or chromium on PATH; set CHROME_BIN'
@@ -1854,16 +1860,22 @@ if ((LINUX_MODE)); then
         about:blank >"$LOG_DIR/chrome-profile-init.log" 2>&1 || true
     [[ -f "$LINUX_PROFILE/Default/Preferences" ]] || die 'Chrome did not create a profile'
 
-    # The installer refuses to edit Preferences while a browser is running,
-    # because Chrome rewrites that file on exit and would undo the installer's
-    # changes. Wait for the headless Chrome that created the profile to exit.
+    # The installer does not edit a profile while its browser is running,
+    # because Chrome rewrites Preferences on exit and would undo the
+    # installer's changes. It tells from the SingletonLock symlink
+    # (<hostname>-<pid>) in the user data directory, as this check does.
+    # Chrome instances using other profiles do not matter.
+    profile_in_use() {
+        local target
+        target=$(readlink -- "$1/SingletonLock" 2>/dev/null) || return 1
+        kill -0 "${target##*-}" 2>/dev/null
+    }
     for _ in $(seq 1 60); do
-        pgrep -x chrome >/dev/null 2>&1 || pgrep -x chromium >/dev/null 2>&1 || break
+        profile_in_use "$LINUX_PROFILE" || break
         sleep 1
     done
-    if pgrep -x chrome >/dev/null 2>&1 || pgrep -x chromium >/dev/null 2>&1; then
-        die 'a Chrome process is still running; close it before this test'
-    fi
+    ! profile_in_use "$LINUX_PROFILE" \
+        || die 'the headless Chrome that created the test profile is still running'
 
     note 'Running the Linux installer against that profile.'
     "$PYTHON_CMD" "$PROJECT_SCRIPT" install --non-interactive \
@@ -1914,19 +1926,41 @@ if ((LINUX_MODE)); then
     export EXPECT_WINDOWS=0
     note "Linux Chrome CDP at $CDP_ENDPOINT"
 
+    # An update has to work while Chrome is running: it replaces the files and
+    # leaves Preferences alone. Recording an older version makes install
+    # rebuild now, and the probe below then runs against the swapped files.
+    note 'Updating the install while Chrome is running.'
+    "$PYTHON_CMD" - "$WORK_DIR/ubo-lpa/.state.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path) as handle:
+    state = json.load(handle)
+state["version"] = "0.0.0"
+with open(path, "w") as handle:
+    json.dump(state, handle)
+PY
+    "$PYTHON_CMD" "$PROJECT_SCRIPT" install --non-interactive \
+        --dir "$WORK_DIR/ubo-lpa" 2>&1 | tee "$LOG_DIR/linux-update.log"
+    grep -q 'Chrome is running and loads uBO' "$LOG_DIR/linux-update.log" \
+        || die 'install did not rebuild while Chrome was running'
+    ! grep -q 'Injected into' "$LOG_DIR/linux-update.log" \
+        || die 'install edited Preferences while Chrome was running'
+
     timeout --foreground --signal=TERM --kill-after=30s 8m \
         env PROBE_MODE=test EXPECT_WINDOWS=0 "$PYTHON_CMD" "$WORK_DIR/probe.py" 2>&1 \
         | tee "$LOG_DIR/probe-linux.log"
 
     # The probe ends with Browser.close but ignores an error from it, so Chrome
-    # can still be running here, and the installer does not edit Preferences
-    # while Chrome is running.
+    # can still be running here, and uninstall does not edit a profile while
+    # its browser is running.
     note 'Closing Chrome before the uninstall check.'
     kill "$CHROME_PID" >/dev/null 2>&1 || true
     reap_pid_bounded "$CHROME_PID"
     CHROME_PID=
     for _ in $(seq 1 60); do
-        pgrep -x chrome >/dev/null 2>&1 || pgrep -x chromium >/dev/null 2>&1 || break
+        profile_in_use "$LINUX_PROFILE" || break
         sleep 1
     done
 

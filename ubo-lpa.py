@@ -29,6 +29,7 @@ import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import contextlib
 import sys
@@ -606,18 +607,7 @@ def check(
                 ("uBO", ubo_id, ext),
                 ("companion", comp_id, comp),
             ):
-                entry = entries.get(eid)
-                if entry is None:
-                    state = "absent"
-                elif entry.get("disable_reasons"):
-                    state = "disabled"
-                elif entry.get("state") not in (1, None):
-                    state = f"state={entry.get('state')}"
-                elif Path(str(entry.get("path", ""))) != want_dir:
-                    state = "wrong path"
-                else:
-                    state = "enabled"
-                row(f"{label} {name}", state, "enabled")
+                row(f"{label} {name}", entry_state(entries.get(eid), want_dir), "enabled")
             dev = prefs.get("extensions", {}).get("ui", {}).get("developer_mode")
             row(f"{label} developer mode", dev, True)
         if not found:
@@ -696,7 +686,8 @@ class Installer:
         return ubo_id, comp_id, ubo_key, comp_key
 
     # -- platform-specific delivery
-    def deliver(self, ubo_id: str, comp_id: str, version: str) -> None:
+    def deliver(self, ubo_id: str, comp_id: str, version: str, rebuilt: bool) -> int:
+        """Make Chrome load the built files. Returns the exit status."""
         raise NotImplementedError
 
     def remove(self) -> None:
@@ -704,7 +695,6 @@ class Installer:
 
     # -- shared build
     def install(self, quiet: bool = False) -> int:
-        self.preflight()
         self.root.mkdir(parents=True, exist_ok=True)
         with self.lock():
             return self._install(quiet)
@@ -754,7 +744,9 @@ class Installer:
         installed = self.state().get("version")
 
         present = self.state_file.exists() and self.ext.is_dir() and self.comp.is_dir()
-        inconsistent = present and check_quiet(self.root, ubo_id, comp_id) > 0
+        # Only the files decide whether to rebuild. A profile without the
+        # extensions is fixed by deliver() below, which runs on every install.
+        broken = present and check_quiet(self.root, ubo_id, comp_id, profiles=False) > 0
         outdated = present and installed != tag
 
         if installed and version_tuple(tag) < version_tuple(installed):
@@ -764,17 +756,14 @@ class Installer:
             # from the version already recorded.
             source = "The release API" if from_api else "The built-in release list"
             info(f"{source} offers {tag}, older than the installed {installed}.")
-            if present and not inconsistent:
-                info("Keeping the installed version.")
-                return 0
-            info(f"Installation is incomplete or inconsistent, so rebuilding {installed}.")
             tag = installed
-            present = False
+            outdated = False
 
+        rebuild = not present or broken or outdated
         if present:
-            if inconsistent:
+            if broken:
                 warn("Installed but inconsistent:")
-                check(self.root, ubo_id, comp_id)
+                check(self.root, ubo_id, comp_id, profiles=False)
                 print()
                 if not quiet and not ask("Repair it (re-download and rebuild)?", True):
                     info("No changes made.")
@@ -783,14 +772,20 @@ class Installer:
                 ok(f"Installed: uBO {installed}; {tag} is available.")
             else:
                 ok(f"Installed: uBO {installed} (current)")
-                if quiet:
-                    info("No changes made.")
-                    return 0
-                if not ask("Installation is already current. Reinstall?", False):
-                    info("No changes made.")
-                    return 0
+                rebuild = not quiet and ask("Installation is already current. Reinstall?", False)
             print()
 
+        # IDs are recorded before any profile is touched, so if delivery fails
+        # part way through, uninstall can still find the entries already
+        # written.
+        self.save_state(ext_id=ubo_id, comp_id=comp_id)
+        if rebuild:
+            self._rebuild(tag, ubo_id, comp_id, ubo_key, comp_key)
+            self.save_state(version=tag)
+        return self.deliver(ubo_id, comp_id, tag, rebuild)
+
+    def _rebuild(self, tag: str, ubo_id: str, comp_id: str, ubo_key: str,
+                 comp_key: str) -> None:
         # Build and verify the complete staged copy before modifying the working
         # installation. A changed upstream layout or failed patch therefore
         # leaves the existing installation operational.
@@ -810,22 +805,14 @@ class Installer:
             shutil.rmtree(staging, ignore_errors=True)
             raise
 
+        # A running Chrome keeps working through the swap. It reads the
+        # extension files from disk as it needs them and the manifest at its
+        # next start, so the new version runs fully after a restart.
         swap_pair([
             (staging / "extension", self.ext),
             (staging / "companion", self.comp),
         ])
         shutil.rmtree(staging, ignore_errors=True)
-
-        # IDs are recorded before any profile is touched, so if delivery fails
-        # part way through, uninstall can still find the entries already
-        # written. The version is recorded only after delivery succeeds.
-        self.save_state(ext_id=ubo_id, comp_id=comp_id)
-        self.deliver(ubo_id, comp_id, tag)
-        self.save_state(version=tag)
-        return 0
-
-    def preflight(self) -> None:
-        pass
 
     OWNED = (
         "extension",
@@ -922,11 +909,12 @@ def check_quiet(root: Path, ubo_id: str, comp_id: str, profiles: bool = True,
 
 
 class LinuxInstaller(Installer):
-    """Injects directly into each profile's Preferences. Chrome must be closed."""
-
-    def preflight(self) -> None:
-        if chrome_running():
-            die("Chrome is running. Close it first.")
+    """
+    Adds both extensions to each profile's Preferences. Chrome keeps that file
+    in memory and writes it back, so a profile is only edited while its browser
+    is closed. An update keeps the install path and IDs, so the entries already
+    in Preferences stay valid and only the files change.
+    """
 
     def profiles(self) -> list[Path]:
         found: list[Path] = []
@@ -945,21 +933,48 @@ class LinuxInstaller(Installer):
                 )
         return sorted(set(found))
 
-    def deliver(self, ubo_id: str, comp_id: str, version: str) -> None:
+    def deliver(self, ubo_id: str, comp_id: str, version: str, rebuilt: bool) -> int:
         targets = self.profiles()
         if not targets:
             die("No Chrome/Chromium profile found.")
+        injected, waiting, loaded_by_running = [], [], []
         for profile in targets:
-            self._inject_profile(profile, ubo_id, comp_id)
-            ok(f"Injected into {profile.parent.name}/{profile.name}")
-        print()
-        ok(f"uBlock Origin {version} installed as a legacy packaged app")
-        info("Start Chrome to activate.")
+            label = f"{profile.parent.name}/{profile.name}"
+            result = self._inject_profile(profile, ubo_id, comp_id)
+            if result == "injected":
+                injected.append(label)
+                ok(f"Injected into {label}")
+            elif result == "waiting":
+                waiting.append(label)
+            elif browser_running(profile.parent):
+                loaded_by_running.append(label)
+        if rebuilt and (injected or loaded_by_running):
+            print()
+            ok(f"uBlock Origin {version} installed as a legacy packaged app")
+            if loaded_by_running:
+                info(f"Chrome is running and loads uBO {version} at its next start.")
+            else:
+                info("Start Chrome to activate.")
+        elif not rebuilt and not injected and not waiting:
+            info("No changes made.")
+        if waiting:
+            warn(
+                f"Chrome is running, so uBO was not added to {', '.join(waiting)}. "
+                "Close Chrome and run install again."
+            )
+            return 1
+        return 0
 
-    def _inject_profile(self, profile: Path, ubo_id: str, comp_id: str) -> None:
+    def _inject_profile(self, profile: Path, ubo_id: str, comp_id: str) -> str:
+        """
+        Add both extensions to one profile. Returns "current" when the profile
+        already has correct entries, "waiting" when it needs changes but its
+        browser is running, and "injected" after writing the changes.
+        """
         prefs_path = profile / "Preferences"
         prefs = json.loads(prefs_path.read_text())
         settings = prefs.setdefault("extensions", {}).setdefault("settings", {})
+        changed = False
 
         # Remove entries from earlier installations by this program. Limit the
         # operation to this installation directory so unrelated unpacked
@@ -981,6 +996,7 @@ class LinuxInstaller(Installer):
             and under_install_dir(str(v["path"]))
         ]:
             del settings[key]
+            changed = True
 
         # Chrome disables unpacked MV3 extensions with
         # DISABLE_UNSUPPORTED_DEVELOPER_EXTENSION (1<<24) unless this is set.
@@ -990,20 +1006,34 @@ class LinuxInstaller(Installer):
         ui = prefs["extensions"].setdefault("ui", {})
         touched_dev_mode = ui.get("developer_mode") is not True
         ui["developer_mode"] = True
+        changed |= touched_dev_mode
 
-        backup = prefs_path.with_suffix(prefs_path.suffix + ".ubo-lpa.bak")
-        if not backup.exists():
-            shutil.copy2(prefs_path, backup)
-
+        # An entry that is already correct stays as it is, including the copy
+        # of the manifest in it. Chrome reads an unpacked extension's manifest
+        # from disk at every start, and does not disable an unpacked extension
+        # whose new version asks for more permissions, so an update does not
+        # need to touch the entry.
         for ext_id, ext_dir in ((ubo_id, self.ext), (comp_id, self.comp)):
-            settings[ext_id] = self._entry(ext_id, ext_dir)
+            if entry_state(settings.get(ext_id), ext_dir) != "enabled":
+                settings[ext_id] = self._entry(ext_id, ext_dir)
+                changed = True
 
         stock = settings.get(STOCK_UBO_ID)
         touched_stock = bool(stock) and stock.get("state") == 1
         if touched_stock:
             stock["state"] = 0
-            info(f"Disabled stock uBO in {profile.name}")
+            changed = True
 
+        if not changed:
+            return "current"
+        if browser_running(profile.parent):
+            return "waiting"
+
+        backup = prefs_path.with_suffix(prefs_path.suffix + ".ubo-lpa.bak")
+        if not backup.exists():
+            shutil.copy2(prefs_path, backup)
+        if touched_stock:
+            info(f"Disabled stock uBO in {profile.name}")
         write_prefs(prefs_path, prefs)
         # A later install reads the already-modified values and would otherwise
         # record False, losing the record of what the first install changed.
@@ -1014,6 +1044,7 @@ class LinuxInstaller(Installer):
             "set_developer_mode": bool(prior.get("set_developer_mode")) or touched_dev_mode,
         }
         self.save_state(profiles=journal)
+        return "injected"
 
     @staticmethod
     def _entry(ext_id: str, ext_dir: Path) -> dict:
@@ -1055,10 +1086,11 @@ class LinuxInstaller(Installer):
                 "touch profiles or files for a directory this installer did "
                 "not create"
             )
-        if chrome_running():
-            die("Chrome is running. Close it first.")
         state = self.state()
         ids = {state.get("ext_id"), state.get("comp_id")} - {None}
+        # Work out every edit first, so a running browser stops the uninstall
+        # before any profile or file has changed.
+        edits = []
         for profile in self.profiles():
             prefs_path = profile / "Preferences"
             prefs = json.loads(prefs_path.read_text())
@@ -1077,28 +1109,53 @@ class LinuxInstaller(Installer):
                 if ui.get("developer_mode") is True:
                     ui["developer_mode"] = False
                     changed = True
+            edits.append((profile, prefs, changed))
+        running = sorted({str(p.parent) for p, _, changed in edits
+                          if changed and browser_running(p.parent)})
+        if running:
+            die(f"Chrome is running with {', '.join(running)}. Close it first.")
+        for profile, prefs, changed in edits:
+            prefs_path = profile / "Preferences"
             if changed:
                 write_prefs(prefs_path, prefs)
                 ok(f"Cleaned {profile.name}")
             backup = prefs_path.with_suffix(prefs_path.suffix + ".ubo-lpa.bak")
             backup.unlink(missing_ok=True)
+        self._remove_timer()
+        self.remove_install_dir()
+        ok("Uninstalled.")
+
+    UNIT_DIR = Path.home() / ".config/systemd/user"
+
+    def _remove_timer(self) -> None:
+        """Remove the timer units, if they update this install directory."""
+        service = self.UNIT_DIR / f"{TIMER_NAME}.service"
+        try:
+            text = service.read_text()
+        except OSError:
+            return
+        match = re.search(r'--dir "((?:[^"\\]|\\.)*)"', text)
+        target = (
+            Path(match.group(1).replace('\\"', '"').replace("%%", "%"))
+            if match else default_root()
+        )
+        if target != self.root:
+            info(f"Leaving the timer units in place; they update {target}.")
+            return
         # Disable before unlinking, or systemd keeps a dangling symlink in
         # timers.target.wants.
-        unit_dir = Path.home() / ".config/systemd/user"
-        if (unit_dir / f"{TIMER_NAME}.timer").exists():
+        if (self.UNIT_DIR / f"{TIMER_NAME}.timer").exists():
             result = systemctl("disable", "--now", f"{TIMER_NAME}.timer")
             if result is None:
                 info("systemctl not found; deleting the timer units without disabling them")
             elif result.returncode != 0:
                 warn(f"could not disable the timer: {result.stderr.strip()}")
         for unit in (f"{TIMER_NAME}.service", f"{TIMER_NAME}.timer"):
-            (unit_dir / unit).unlink(missing_ok=True)
+            (self.UNIT_DIR / unit).unlink(missing_ok=True)
         systemctl("daemon-reload")
-        self.remove_install_dir()
-        ok("Uninstalled.")
 
     def timer(self) -> None:
-        unit_dir = Path.home() / ".config/systemd/user"
+        unit_dir = self.UNIT_DIR
         unit_dir.mkdir(parents=True, exist_ok=True)
         script = Path(__file__).resolve()
         # systemd splits ExecStart on whitespace and treats % specially, so each
@@ -1106,9 +1163,11 @@ class LinuxInstaller(Installer):
         def esc(value: str) -> str:
             return '"' + str(value).replace("%", "%%").replace('"', '\\"') + '"'
 
-        argv = [esc(sys.executable), esc(script), "install", "--non-interactive"]
-        if self.root != default_root():
-            argv += ["--dir", esc(self.root)]
+        # The install directory is always given, so the unit does not depend
+        # on the user manager's environment, and uninstall can tell which
+        # install the timer updates.
+        argv = [esc(sys.executable), esc(script), "install", "--non-interactive",
+                "--dir", esc(self.root)]
         (unit_dir / f"{TIMER_NAME}.service").write_text(
             "[Unit]\nDescription=Update uBlock Origin (legacy packaged app)\n"
             "[Service]\nType=oneshot\n"
@@ -1139,7 +1198,10 @@ class WindowsInstaller(Installer):
     enterprise policy (see WRITEUP.md), so the final step is manual.
     """
 
-    def deliver(self, ubo_id: str, comp_id: str, version: str) -> None:
+    def deliver(self, ubo_id: str, comp_id: str, version: str, rebuilt: bool) -> int:
+        if not rebuilt:
+            info("No changes made.")
+            return 0
         print()
         ok(f"Staged uBlock Origin {version} in {self.root}")
         print()
@@ -1151,6 +1213,7 @@ class WindowsInstaller(Installer):
         print(f"  4. Load unpacked  ->  {self.comp}")
         print()
         info("Both extensions persist across browser restarts. See WRITEUP.md for details.")
+        return 0
 
     def remove(self) -> None:
         self.remove_install_dir()
@@ -1171,18 +1234,46 @@ def systemctl(*args: str) -> subprocess.CompletedProcess | None:
         return None
 
 
-def chrome_running() -> bool:
+def browser_running(user_data_dir: Path) -> bool:
     """
-    True if Chrome or Chromium is running. The installer edits the profiles of
-    both browsers.
+    True if a Chrome or Chromium process has this user data directory open.
+    While it runs, Chrome keeps SingletonLock in the directory as a symlink to
+    "<hostname>-<pid>". A lock whose process has exited is left over from a
+    crash, and Chrome itself takes it over at its next start.
     """
-    for name in ("chrome", "chromium", "chromium-browser", "google-chrome"):
-        try:
-            if subprocess.run(["pgrep", "-x", name], capture_output=True).returncode == 0:
-                return True
-        except FileNotFoundError:
-            return False
-    return False
+    try:
+        target = os.readlink(user_data_dir / "SingletonLock")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    host, _, pid = target.rpartition("-")
+    if host != socket.gethostname() or not pid.isdigit():
+        # Held from another machine sharing this home directory, or a lock
+        # this code cannot read: treat the profile as open.
+        return True
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def entry_state(entry: dict | None, ext_dir: Path) -> str:
+    """How a profile's Preferences entry for one of the extensions stands."""
+    if entry is None:
+        return "absent"
+    if entry.get("location") != 4:
+        return f"location={entry.get('location')}"
+    if entry.get("disable_reasons"):
+        return "disabled"
+    if entry.get("state") not in (1, None):
+        return f"state={entry.get('state')}"
+    if Path(str(entry.get("path", ""))) != ext_dir:
+        return "wrong path"
+    return "enabled"
 
 
 def default_root() -> Path:

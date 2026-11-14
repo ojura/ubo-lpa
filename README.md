@@ -67,8 +67,13 @@ From an existing checkout:
 python3 ubo-lpa.py install
 ```
 
-Close Chrome first; it rewrites `Preferences` on exit and will overwrite the
-injection. Root access is not required. The extensions and their keys are
+Close Chrome for the first install. Chrome keeps each profile's `Preferences`
+in memory and writes it back on exit, so the installer only edits a profile
+while its browser is closed. With Chrome open, `install` builds the files,
+leaves the profiles alone and exits with status 1. Updates keep the same paths
+and IDs and only replace the files, so they run while Chrome is open, and
+Chrome loads the new version at its next start. Adding the extensions to a new
+profile and `uninstall` need Chrome closed again. Root access is not required. The extensions and their keys are
 stored in `~/.local/share/ublock-origin-lpa/` (under `$XDG_DATA_HOME` if set),
 or in the directory given with `--dir`. `timer` also writes a systemd service
 and timer to `~/.config/systemd/user/`. In each profile, `install` keeps a copy
@@ -84,11 +89,11 @@ deletes it.
 | `uninstall` | remove both extensions and undo the profile changes [listed above](#what-the-installer-changes) |
 | `timer` | install a systemd user timer that runs `install` daily |
 
-The timer runs `install` once a day. If Chrome is running at that moment,
-`install` exits before changing anything, and the timer tries again the next
-day. Running `install` manually with Chrome closed is therefore the recommended
-way to update. The unit records the script's absolute path, so moving the
-checkout requires re-running `timer`.
+The timer runs `install` once a day, whether or not Chrome is open. If a
+profile still needs the extensions added, such as a profile created since the
+last install, the run exits with status 1 until `install` runs once with Chrome
+closed. The unit records the script's absolute path and the install directory,
+so moving the checkout requires re-running `timer`.
 
 ### Windows
 
