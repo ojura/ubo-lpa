@@ -356,6 +356,45 @@ it off from `chrome://inspect` as the page's checkbox does,
 `chrome.send('set-remote-debugging-enabled', [false])`, and Chrome closes the
 connection.
 
+`load --profiles "Default|Profile 1"` loads into the named profile folders, on
+the same connection and so with one prompt. `Target.createTarget` opens tabs in
+a single profile, so for each one `load` starts `chrome.exe` again with
+`--profile-directory`. The running Chrome takes that command over and opens a
+window in the profile, always at the New Tab page: it ignores any address on a
+command line it takes over. The page target that was not there before is that
+window's tab, which `load` turns into `chrome://extensions` and works in as
+above, then closes. Profiles that already have both extensions are left out.
+Chrome keeps its profiles in the user's own folders whether it is installed for
+this user or for all users; only the `UserDataDir` policy moves them, and `load`
+reads that policy.
+
+### The MSI's setup wizard
+
+The MSI carries Python, `ubo-lpa.py` and the newest uBO release at build time,
+twice: as the files it installs, and as one zip in its `Binary` table. Before
+the first page, a custom action (`windows/msi/ca`) unpacks the zip into the
+temporary folder and runs `ubo-lpa.py setup-info`, which reports the Chrome
+`load` uses, its version and whether it is installed for this user or for all
+users, its profiles and whether each already has both extensions, the newest uBO
+release on GitHub and the bundled one. The wizard's pages show that: the
+release, newest or bundled, each with a link to its release notes; the profiles,
+as checkboxes; the folder, which defaults to `%LOCALAPPDATA%\uBOLPA`; and two
+options, maintenance and the daily update.
+
+With maintenance, Windows Installer installs the program to
+`%LOCALAPPDATA%\Programs\ubo-lpa` and runs `install`, `timer` and `load` from it.
+The chosen folder is recorded in `HKCU\Software\ubo-lpa`, and the Start menu
+entry runs `msiexec /i` with the product code, which opens the maintenance page:
+Update now, Change settings (the same pages, with the folder fixed) or Remove.
+The daily update setting is kept in the install's state file, so a silent
+upgrade keeps it.
+
+Without maintenance, the wizard runs `install` and `load` from its own unpacked
+copy, while the progress page shows, and its `InstallUISequence` skips
+`ExecuteAction`. Windows Installer then installs and registers nothing, and the
+chosen folder is all that is left. Running the MSI again with the same folder
+updates it in place, with the same keys and so the same extension IDs.
+
 DevTools has a direct `Extensions.loadUnpacked(path)`, and retail Chrome 157
 accepts it on a consent connection without `--enable-unsafe-extension-debugging`.
 Chrome loads extensions that way for the current session only: after a restart

@@ -17,7 +17,11 @@ and the two Installer subclasses at the bottom of this file implement it.
                            and which Chrome profiles have the extensions
     ubo-lpa.py uninstall   remove both extensions and undo the profile changes
     ubo-lpa.py timer       run install daily: a systemd user timer on Linux, a
-                           scheduled task on Windows
+                           scheduled task on Windows; --off removes it, --keep
+                           sets it up unless it was switched off
+    ubo-lpa.py load        Windows: load both extensions into Chrome, into the
+                           profile folders --profiles names
+    ubo-lpa.py setup-info  print, as JSON, what the Windows setup wizard shows
     ubo-lpa.py load        Windows: load both folders into Chrome over its
                            DevTools connection, after a click on Allow in Chrome
 """
@@ -236,16 +240,46 @@ def resolve_latest_tag() -> tuple[str | None, bool]:
     return None, False
 
 
-def download_ubo(tag: str, dest: Path) -> None:
-    url = (
-        f"https://github.com/{GITHUB_REPO}/releases/download/"
-        f"{tag}/uBlock0_{tag}.chromium.zip"
-    )
-    info(f"Downloading uBO {tag}")
+def latest_release() -> str | None:
+    """The newest uBO release according to the release API, or None."""
     try:
-        blob = _get(url, 300)
-    except urllib.error.URLError as exc:
-        die(f"download failed: {exc}")
+        data = json.loads(
+            _get(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest", 20)
+        )
+        return data.get("tag_name") or None
+    except Exception:
+        return None
+
+
+def release_url(tag: str) -> str:
+    return f"https://github.com/{GITHUB_REPO}/releases/tag/{tag}"
+
+
+def ubo_zip_version(archive: Path) -> str:
+    """The uBO version of a Chromium release zip, from its manifest."""
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            manifest = json.loads(zf.read("uBlock0.chromium/manifest.json"))
+        return str(manifest["version"])
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
+        die(f"{archive} is not a uBlock Origin Chromium release ({exc})")
+
+
+def download_ubo(tag: str, dest: Path, archive: Path | None = None) -> None:
+    """Extract uBO into dest, from archive when given, else from its release."""
+    if archive is not None:
+        info(f"Using uBO {tag} from {archive.name}")
+        blob = archive.read_bytes()
+    else:
+        url = (
+            f"https://github.com/{GITHUB_REPO}/releases/download/"
+            f"{tag}/uBlock0_{tag}.chromium.zip"
+        )
+        info(f"Downloading uBO {tag}")
+        try:
+            blob = _get(url, 300)
+        except urllib.error.URLError as exc:
+            die(f"download failed: {exc}")
 
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "ubo.zip"
@@ -754,11 +788,14 @@ def check(
 class Installer:
     """Shared build steps. Subclasses supply the platform delivery."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, ubo_zip: Path | None = None) -> None:
         self.root = root
         self.ext = root / "extension"
         self.comp = root / "companion"
         self.state_file = root / ".state.json"
+        # A uBO release zip to install instead of the newest release, as the
+        # Windows MSI does with the release it bundles.
+        self.ubo_zip = ubo_zip
 
     # -- state
     def state(self) -> dict:
@@ -823,6 +860,33 @@ class Installer:
     def remove(self) -> None:
         raise NotImplementedError
 
+    def timer(self) -> None:
+        raise NotImplementedError
+
+    def timer_off(self) -> None:
+        raise NotImplementedError
+
+    def timer_active(self) -> bool:
+        raise NotImplementedError
+
+    def apply_timer(self, mode: str) -> None:
+        """
+        "on" schedules the daily update and "off" removes it. "keep" schedules
+        it unless it was switched off before, which is what an upgrade without
+        a choice in the setup wizard needs. The choice is kept in the state
+        file.
+        """
+        if mode == "keep" and self.state().get("autoupdate") is False:
+            info("Daily updates stay off.")
+            return
+        if mode == "off":
+            self.timer_off()
+            ok("Daily updates are off.")
+        else:
+            self.timer()
+        if self.owns_root():
+            self.save_state(autoupdate=mode != "off")
+
     # -- shared build
     def install(self, quiet: bool = False) -> int:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -867,10 +931,13 @@ class Installer:
     def _install(self, quiet: bool = False) -> int:
         ubo_id, comp_id, ubo_key, comp_key = self.ids()
 
-        info("Checking for latest uBO release...")
-        tag, from_api = resolve_latest_tag()
-        if not tag:
-            die("Could not reach any uBO release.")
+        if self.ubo_zip is not None:
+            tag, from_api = ubo_zip_version(self.ubo_zip), False
+        else:
+            info("Checking for latest uBO release...")
+            tag, from_api = resolve_latest_tag()
+            if not tag:
+                die("Could not reach any uBO release.")
         installed = self.state().get("version")
 
         present = self.state_file.exists() and self.ext.is_dir() and self.comp.is_dir()
@@ -884,10 +951,15 @@ class Installer:
             # the fallback can offer a version older than the installed one.
             # That must not cause a downgrade. A broken install is still rebuilt
             # from the version already recorded.
-            source = "The release API" if from_api else "The built-in release list"
+            source = ("The release API" if from_api
+                      else f"{self.ubo_zip.name}" if self.ubo_zip is not None
+                      else "The built-in release list")
             info(f"{source} offers {tag}, older than the installed {installed}.")
             tag = installed
             outdated = False
+            # A rebuild then downloads the installed release; the zip holds
+            # the older one.
+            self.ubo_zip = None
 
         rebuild = not present or broken or outdated
         if present:
@@ -924,7 +996,7 @@ class Installer:
             shutil.rmtree(staging)
         staging.mkdir(parents=True)
         try:
-            download_ubo(tag, staging / "extension")
+            download_ubo(tag, staging / "extension", self.ubo_zip)
             patch_ubo(staging / "extension", comp_id, ubo_key)
             build_companion(staging / "companion", ubo_id, staging / "extension", comp_key)
             if check_quiet(staging, ubo_id, comp_id, profiles=False,
@@ -1294,18 +1366,29 @@ class LinuxInstaller(Installer):
 
     UNIT_DIR = Path.home() / ".config/systemd/user"
 
-    def _remove_timer(self) -> None:
-        """Remove the timer units, if they update this install directory."""
-        service = self.UNIT_DIR / f"{TIMER_NAME}.service"
+    def _timer_target(self) -> Path | None:
+        """The install directory the timer units update, or None without units."""
         try:
-            text = service.read_text()
+            text = (self.UNIT_DIR / f"{TIMER_NAME}.service").read_text()
         except OSError:
-            return
+            return None
         match = re.search(r'--dir "((?:[^"\\]|\\.)*)"', text)
-        target = (
+        return (
             Path(match.group(1).replace('\\"', '"').replace("%%", "%"))
             if match else default_root()
         )
+
+    def timer_active(self) -> bool:
+        return self._timer_target() == self.root
+
+    def timer_off(self) -> None:
+        self._remove_timer()
+
+    def _remove_timer(self) -> None:
+        """Remove the timer units, if they update this install directory."""
+        target = self._timer_target()
+        if target is None:
+            return
         if target != self.root:
             info(f"Leaving the timer units in place; they update {target}.")
             return
@@ -1321,7 +1404,7 @@ class LinuxInstaller(Installer):
             (self.UNIT_DIR / unit).unlink(missing_ok=True)
         systemctl("daemon-reload")
 
-    def load(self, user_data: Path | None = None) -> int:
+    def load(self, user_data: Path | None = None, profiles: list[str] | None = None) -> int:
         info("On Linux, install adds both extensions to Chrome's profiles itself.")
         return 0
 
@@ -1400,28 +1483,23 @@ class WindowsInstaller(Installer):
 
     def loaded_in(self, ubo_id: str, comp_id: str) -> list[str]:
         """The Chrome profiles that have both extensions loaded from this
-        directory. Chrome keeps extension entries in Secure Preferences on
-        Windows; Preferences is read as well."""
+        directory, as "<browser>/<profile folder>"."""
         found = []
-        want = {ubo_id: self.ext, comp_id: self.comp}
         for user_data in chrome_user_data_dirs():
-            if not user_data.is_dir():
-                continue
-            profiles = [user_data / "Default", *sorted(user_data.glob("Profile *"))]
-            for profile in profiles:
-                settings: dict = {}
-                for name in ("Preferences", "Secure Preferences"):
-                    try:
-                        prefs = json.loads((profile / name).read_text(encoding="utf-8"))
-                    except (OSError, ValueError):
-                        continue
-                    settings.update(prefs.get("extensions", {}).get("settings", {}))
-                if all(
-                    same_path(str((settings.get(eid) or {}).get("path", "")), path)
-                    for eid, path in want.items()
-                ):
-                    found.append(f"{user_data.parent.name}/{profile.name}")
+            for profile in chrome_profiles(user_data):
+                if self.has_both(user_data / profile["dir"], ubo_id, comp_id):
+                    found.append(f"{user_data.parent.name}/{profile['dir']}")
         return found
+
+    def has_both(self, profile: Path, ubo_id: str, comp_id: str) -> bool:
+        """True if this profile has both extensions loaded from this directory.
+        Chrome keeps extension entries in Secure Preferences on Windows;
+        Preferences is read as well."""
+        settings = profile_extension_settings(profile)
+        return all(
+            same_path(str((settings.get(eid) or {}).get("path", "")), path)
+            for eid, path in ((ubo_id, self.ext), (comp_id, self.comp))
+        )
 
     @property
     def task_name(self) -> str:
@@ -1444,6 +1522,18 @@ class WindowsInstaller(Installer):
         self.remove_install_dir()
         ok("Removed staged files.")
         info("Remove both entries from chrome://extensions as well; this script\n   cannot unload them.")
+
+    def timer_active(self) -> bool:
+        result = run_quiet(["schtasks", "/Query", "/TN", self.task_name])
+        return result is not None and result.returncode == 0
+
+    def timer_off(self) -> None:
+        if self.timer_active():
+            result = run_quiet(["schtasks", "/Delete", "/TN", self.task_name, "/F"])
+            if result is None or result.returncode != 0:
+                detail = result and ((result.stderr or result.stdout).strip() or f"exit {result.returncode}")
+                die(f"schtasks /Delete failed: {detail}")
+            ok(f"Removed the scheduled task {self.task_name}.")
 
     def timer(self) -> None:
         # pythonw.exe runs without a console window; main() then appends the
@@ -1471,13 +1561,14 @@ class WindowsInstaller(Installer):
             die(f"schtasks /Create failed: {detail}")
         ok(f"Scheduled task {self.task_name} created (daily)")
 
-    def load(self, user_data: Path | None = None) -> int:
+    def load(self, user_data: Path | None = None, profiles: list[str] | None = None) -> int:
         """
-        Load both folders into Chrome over its DevTools connection. When that
-        fails, open a page with the manual steps and the reason.
+        Load both folders into Chrome over its DevTools connection: into the
+        given profile folders, or without any into the profile Chrome opens.
+        When that fails, open a page with the manual steps and the reason.
         """
         try:
-            return self._load(user_data)
+            return self._load(user_data, profiles)
         except SystemExit as exc:
             if exc.code and user_data is None:
                 guide = self.root / "load-by-hand.html"
@@ -1491,20 +1582,29 @@ class WindowsInstaller(Installer):
                     warn(f"Could not open it ({error}).")
             raise
 
-    def _load(self, user_data: Path | None) -> int:
+    def _load(self, user_data: Path | None, profiles: list[str] | None) -> int:
         state = self.state()
         ubo_id, comp_id = state.get("ext_id"), state.get("comp_id")
         if not ubo_id or not comp_id or not self.ext.is_dir() or not self.comp.is_dir():
             die("Not installed; run install first.")
         explicit = user_data is not None
-        if not explicit and self.loaded_in(ubo_id, comp_id):
-            ok("Both extensions are already loaded in Chrome.")
-            return 0
-        user_data = user_data or chrome_user_data_dirs()[0]
+        user_data = user_data or chrome_user_data()
+        if profiles:
+            done = [p for p in profiles if self.has_both(user_data / p, ubo_id, comp_id)]
+            if done:
+                ok(f"Already loaded in {', '.join(done)}.")
+            pending: list[str | None] = [p for p in profiles if p not in done]
+            if not pending:
+                return 0
+        else:
+            if not explicit and self.loaded_in(ubo_id, comp_id):
+                ok("Both extensions are already loaded in Chrome.")
+                return 0
+            pending = [None]
+        chrome = chrome_exe()
         connection = devtools_port(user_data)
         switched_on = False
         if connection is None:
-            chrome = chrome_exe()
             if chrome is None:
                 die("Google Chrome was not found.")
             flags = [f"--user-data-dir={user_data}"] if explicit else []
@@ -1534,14 +1634,25 @@ class WindowsInstaller(Installer):
                      "chrome://inspect/#remote-debugging.")
             die(f"Chrome did not allow the connection ({exc}).")
         try:
-            self._load_with(devtools, ubo_id, comp_id)
+            for profile in pending:
+                if profile is None:
+                    target, session = devtools.page("chrome://extensions/")
+                else:
+                    if chrome is None:
+                        die("Google Chrome was not found.")
+                    info(f"Opening Chrome's profile {profile}")
+                    target, session = profile_page(
+                        devtools, chrome, profile, user_data if explicit else None)
+                self._load_with(devtools, session, ubo_id, comp_id)
+                if profile is not None:
+                    # Its own window, which closes with its only tab.
+                    devtools.call("Target.closeTarget", {"targetId": target})
         finally:
             if switched_on:
                 switch_off_remote_debugging(devtools, user_data)
         return 0
 
-    def _load_with(self, devtools: DevTools, ubo_id: str, comp_id: str) -> None:
-        _, session = devtools.page("chrome://extensions/")
+    def _load_with(self, devtools: DevTools, session: str, ubo_id: str, comp_id: str) -> None:
         for _ in range(150):
             try:
                 if devtools.evaluate(session, "typeof chrome.developerPrivate") == "object":
@@ -1651,12 +1762,184 @@ def chrome_user_data_dirs() -> list[Path]:
     """Chrome's and Chromium's user data directories on Windows."""
     local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
     return [
-        local / "Google/Chrome/User Data",
+        chrome_user_data(),
         local / "Google/Chrome Beta/User Data",
         local / "Google/Chrome Dev/User Data",
         local / "Google/Chrome SxS/User Data",
         local / "Chromium/User Data",
     ]
+
+
+def chrome_user_data() -> Path:
+    """
+    Google Chrome's user data directory, which holds its profiles. It is in
+    the user's own folders whether Chrome is installed for this user or for
+    all users; only the UserDataDir policy moves it.
+    """
+    if not IS_WINDOWS:
+        config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        return config / "google-chrome"
+    import winreg
+    # A machine policy takes precedence over a user policy, as in Chrome.
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, r"SOFTWARE\Policies\Google\Chrome") as key:
+                value = winreg.QueryValueEx(key, "UserDataDir")[0]
+        except OSError:
+            continue
+        if value:
+            return Path(expand_policy_path(str(value)))
+    local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+    return local / "Google/Chrome/User Data"
+
+
+def expand_policy_path(value: str) -> str:
+    """The ${...} variables Chrome's path policies accept, and %VARIABLES%."""
+    env = os.environ
+    for name, replacement in {
+        "${local_app_data}": env.get("LOCALAPPDATA", ""),
+        "${roaming_app_data}": env.get("APPDATA", ""),
+        "${profile}": env.get("USERPROFILE", ""),
+        "${documents}": str(Path(env.get("USERPROFILE", "")) / "Documents"),
+        "${user_name}": env.get("USERNAME", ""),
+        "${machine_name}": env.get("COMPUTERNAME", ""),
+        "${program_files}": env.get("PROGRAMFILES", ""),
+        "${windows}": env.get("WINDIR", ""),
+    }.items():
+        value = value.replace(name, replacement)
+    return os.path.expandvars(value)
+
+
+def chrome_profiles(user_data: Path) -> list[dict]:
+    """
+    The profiles in a user data directory, in the profile picker's order:
+    each with its folder, the name Chrome shows for it and its account.
+    """
+    try:
+        local_state = json.loads((user_data / "Local State").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        local_state = {}
+    profile = local_state.get("profile", {}) if isinstance(local_state, dict) else {}
+    cache = profile.get("info_cache") or {}
+    order = [d for d in (profile.get("profiles_order") or []) if d in cache]
+
+    def number(folder: str) -> tuple:
+        tail = folder.rsplit(" ", 1)[-1]
+        return (folder != "Default", int(tail) if tail.isdigit() else 0, folder)
+
+    folders = order + sorted((d for d in cache if d not in order), key=number)
+    if not folders and (user_data / "Default").is_dir():
+        folders = ["Default"]
+    return [
+        {"dir": d, "name": (cache.get(d) or {}).get("name") or d,
+         "account": (cache.get(d) or {}).get("user_name") or ""}
+        for d in folders if (user_data / d).is_dir()
+    ]
+
+
+def profile_extension_settings(profile: Path) -> dict:
+    """A profile's extension entries, from Preferences and Secure Preferences."""
+    settings: dict = {}
+    for name in ("Preferences", "Secure Preferences"):
+        try:
+            prefs = json.loads((profile / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        settings.update(prefs.get("extensions", {}).get("settings", {}))
+    return settings
+
+
+def profile_page(devtools: DevTools, chrome: str, profile: str,
+                 user_data: Path | None = None) -> tuple[str, str]:
+    """
+    A chrome://extensions tab in one profile of the running Chrome; returns
+    its target ID and an attached session. Target.createTarget opens tabs in
+    the profile Chrome started with, so this starts chrome.exe again with
+    --profile-directory: the running Chrome takes that command over and opens
+    a window in the profile. That window opens at the New Tab page whatever
+    address the command names, so its tab is the page that was not there
+    before.
+    """
+    def pages() -> list[dict]:
+        return [t for t in devtools.call("Target.getTargets").get("targetInfos", [])
+                if t.get("type") == "page"]
+
+    before = {t["targetId"] for t in pages()}
+    flags = [f"--profile-directory={profile}"]
+    if user_data is not None:
+        flags.insert(0, f"--user-data-dir={user_data}")
+    launch_chrome(chrome, flags)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        new = [t for t in pages() if t["targetId"] not in before]
+        if new:
+            target = new[0]["targetId"]
+            session = devtools.call("Target.attachToTarget", {
+                "targetId": target, "flatten": True})["sessionId"]
+            devtools.call("Page.navigate", {"url": "chrome://extensions/"}, session)
+            return target, session
+        time.sleep(0.5)
+    die(f"Chrome did not open a window for its profile {profile}.")
+
+
+def chrome_info() -> dict:
+    """Which Chrome load uses: its program, version, and whether it is
+    installed for this user or for all users."""
+    exe = chrome_exe()
+    if exe is None:
+        return {"found": False, "user_data": str(chrome_user_data())}
+    scope = "system"
+    if IS_WINDOWS:
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local and os.path.normcase(exe).startswith(os.path.normcase(local)):
+            scope = "user"
+    return {"found": True, "exe": exe, "version": chrome_version(exe), "scope": scope,
+            "user_data": str(chrome_user_data())}
+
+
+def chrome_version(exe: str) -> str | None:
+    if IS_WINDOWS:
+        # chrome.exe sits beside a folder named after its version, which holds
+        # the rest of Chrome. After an update both stay until Chrome restarts.
+        try:
+            names = [d.name for d in Path(exe).parent.iterdir() if d.is_dir()]
+        except OSError:
+            return None
+        versions = [n for n in names if re.fullmatch(r"\d+(\.\d+){3}", n)]
+        return max(versions, key=version_tuple) if versions else None
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                             timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(r"\d+(\.\d+){3}", out)
+    return match.group(0) if match else None
+
+
+def setup_info(installer: Installer) -> dict:
+    """What the Windows setup wizard shows: the Chrome load uses and its
+    profiles, the uBO releases it can install, and this install's state."""
+    chrome = chrome_info()
+    state = installer.state() if installer.owns_root() else {}
+    ubo_id, comp_id = state.get("ext_id"), state.get("comp_id")
+    profiles = []
+    for profile in chrome_profiles(Path(chrome["user_data"])):
+        loaded = bool(ubo_id and comp_id and isinstance(installer, WindowsInstaller)
+                      and installer.has_both(Path(chrome["user_data"]) / profile["dir"],
+                                             ubo_id, comp_id))
+        profiles.append({**profile, "loaded": loaded})
+    latest = latest_release()
+    bundled = ubo_zip_version(installer.ubo_zip) if installer.ubo_zip else None
+    return {
+        "chrome": chrome,
+        "profiles": profiles,
+        "ubo": {
+            "latest": latest, "latest_url": release_url(latest) if latest else None,
+            "bundled": bundled, "bundled_url": release_url(bundled) if bundled else None,
+        },
+        "install": {"dir": str(installer.root), "version": state.get("version"),
+                    "autoupdate": installer.timer_active()},
+    }
 
 
 def same_path(a: str, b: Path) -> bool:
@@ -1874,6 +2157,10 @@ def close_chrome(user_data: Path) -> None:
 
 def launch_chrome(chrome: str, flags: list[str]) -> None:
     """Start Chrome so that it outlives this process."""
+    if not IS_WINDOWS:
+        subprocess.Popen([chrome, *flags], start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
     detached = 0x00000008 | 0x00000200  # DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP
     for breakaway in (0x01000000, 0):  # CREATE_BREAKAWAY_FROM_JOB, if the job allows it
         try:
@@ -1969,7 +2256,17 @@ for (const b of document.querySelectorAll(".copy button"))
 
 
 def chrome_exe() -> str | None:
-    """Google Chrome's chrome.exe, from App Paths or its usual folders."""
+    """
+    Google Chrome's chrome.exe, from App Paths or its usual folders. A Chrome
+    installed for this user registers under HKEY_CURRENT_USER and one for all
+    users under HKEY_LOCAL_MACHINE.
+    """
+    if not IS_WINDOWS:
+        for name in ("google-chrome", "google-chrome-stable"):
+            found = shutil.which(name)
+            if found:
+                return found
+        return None
     import winreg
     for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
         try:
@@ -2113,7 +2410,8 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         nargs="?",
         default="install",
-        choices=["install", "update", "check", "status", "uninstall", "timer", "load"],
+        choices=["install", "update", "check", "status", "uninstall", "timer", "load",
+                 "setup-info"],
     )
     parser.add_argument(
         "--non-interactive",
@@ -2124,6 +2422,15 @@ def main(argv: list[str] | None = None) -> int:
         help="never prompt; take the default answer (used by the timer)",
     )
     parser.add_argument("--dir", type=Path, default=None, help="install directory")
+    parser.add_argument("--ubo-zip", type=Path, default=None,
+                        help="install: this uBO release zip instead of the newest release")
+    parser.add_argument("--profiles", default=None,
+                        help='load: the Chrome profile folders to load into, separated by "|"')
+    timer_mode = parser.add_mutually_exclusive_group()
+    timer_mode.add_argument("--off", action="store_true",
+                            help="timer: remove the daily update")
+    timer_mode.add_argument("--keep", action="store_true",
+                            help="timer: schedule the daily update unless it was switched off")
     # Tests point load at a Chrome started with its own user data directory.
     parser.add_argument("--user-data-dir", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -2131,7 +2438,12 @@ def main(argv: list[str] | None = None) -> int:
     # Resolved because the path is written verbatim into Chrome's Preferences,
     # where a relative one would depend on the browser's working directory.
     root = (args.dir.expanduser().resolve() if args.dir else default_root())
-    installer: Installer = (WindowsInstaller if IS_WINDOWS else LinuxInstaller)(root)
+    ubo_zip = args.ubo_zip.expanduser().resolve() if args.ubo_zip else None
+    installer: Installer = (WindowsInstaller if IS_WINDOWS else LinuxInstaller)(root, ubo_zip)
+
+    if args.command == "setup-info":
+        print(json.dumps(setup_info(installer), ensure_ascii=True))
+        return 0
 
     if sys.stdout is None:
         # Started by pythonw.exe, as the Windows scheduled task and the MSI
@@ -2156,10 +2468,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "timer":
         with Installer.lock():
-            installer.timer()
+            installer.apply_timer("off" if args.off else "keep" if args.keep else "on")
         return 0
     if args.command == "load":
-        return installer.load(args.user_data_dir)
+        profiles = [p for p in args.profiles.split("|") if p] if args.profiles else None
+        return installer.load(args.user_data_dir, profiles)
 
     state = installer.state()
     if not state.get("ext_id") or not state.get("comp_id"):

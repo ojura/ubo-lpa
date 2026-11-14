@@ -75,6 +75,9 @@ jobs:
           & "$env:USERPROFILE\.dotnet\tools\wix.exe" extension add -g "WixToolset.Util.wixext/$version"
 
       - name: Build the MSI, and a newer one for the upgrade test
+        env:
+          # Authenticates the lookup of the uBO release to bundle.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python windows/msi/build.py --version 1.0.${{ github.run_number }} --out dist
           python windows/msi/build.py --version 1.1.${{ github.run_number }} --out upgrade
@@ -126,42 +129,64 @@ jobs:
           name: msi-test-${{ github.run_id }}-${{ github.run_attempt }}
           path: shots
 
-      - name: Move the latest tag to this commit and upload the MSI and the screenshots
+      - name: Publish the MSI as the latest release, and the setup screenshots
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           cp "dist/ubo-lpa-1.0.${{ github.run_number }}.msi" ubo-lpa.msi
-          if gh api "repos/$REPO/git/refs/tags/latest" >/dev/null 2>&1; then
-            gh api -X PATCH "repos/$REPO/git/refs/tags/latest" \
-              -f sha="$GITHUB_SHA" -F force=true >/dev/null
-          else
-            gh api "repos/$REPO/git/refs" \
-              -f ref=refs/tags/latest -f sha="$GITHUB_SHA" >/dev/null
-          fi
-          # The msi job's screenshots, in the order setup shows them, under
-          # names that stay the same from build to build.
+          move_tag() {
+            if gh api "repos/$REPO/git/refs/tags/$1" >/dev/null 2>&1; then
+              gh api -X PATCH "repos/$REPO/git/refs/tags/$1" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            else
+              gh api "repos/$REPO/git/refs" -f ref="refs/tags/$1" -f sha="$GITHUB_SHA" >/dev/null
+            fi
+          }
+          move_tag latest
+          move_tag screenshots
+
+          # The screenshots live in their own pre-release, so the latest
+          # release lists only the MSI; its notes and the README show them
+          # from there, under names that stay the same from build to build.
+          chrome=$(cat shots/chrome.txt 2>/dev/null || echo "Google Chrome")
+          base="https://github.com/$REPO/releases/download/screenshots"
           gallery=""
-          uploads=(ubo-lpa.msi)
-          for pair in \
-              "wizard-1-welcome.png:setup-1-welcome.png:Welcome page" \
-              "wizard-2-ready.png:setup-2-ready.png:Ready to install" \
-              "wizard-3-progress.png:setup-3-progress.png:Installing" \
-              "consent-1.png:setup-4-chrome-prompt.png:Chrome asks to allow remote debugging; Allow is the one click setup needs" \
-              "desktop-after-install.png:setup-5-finished.png:Finished, with the uBlock Origin button pinned in Chrome"; do
-            IFS=: read -r from to caption <<<"$pair"
+          uploads=()
+          while IFS='|' read -r from to caption; do
+            [ -n "$from" ] || continue
             if [ -f "shots/$from" ]; then
               cp "shots/$from" "$to"
               uploads+=("$to")
-              gallery+="**$caption**"$'\n\n'"![$caption](https://github.com/$REPO/releases/download/latest/$to)"$'\n\n'
+              gallery+="**$caption**"$'\n\n'"![$caption]($base/$to)"$'\n\n'
             else
               echo "::warning::the msi job did not produce $from"
             fi
-          done
+          done <<EOF
+          wizard-1-welcome.png|setup-1-welcome.png|Welcome
+          wizard-2-release.png|setup-2-release.png|The uBlock Origin release: the newest one on GitHub, or the one bundled with the installer
+          wizard-3-chrome.png|setup-3-chrome.png|$chrome: a current Chrome, in which Manifest V2 extensions no longer run, and the profiles that get uBlock Origin
+          wizard-4-options.png|setup-4-options.png|The folder, maintenance and the daily update
+          wizard-5-ready.png|setup-5-ready.png|Ready to install
+          wizard-6-progress.png|setup-6-progress.png|Installing
+          consent-1.png|setup-7-chrome-prompt.png|Chrome asks whether to allow remote debugging; Allow is the one click Setup needs
+          wizard-7-finish.png|setup-8-finish.png|Finished
+          desktop-after-install.png|setup-9-chrome.png|uBlock Origin running in Chrome, with its button pinned
+          maintenance-change-1-maintenance.png|setup-10-maintenance.png|The Start menu entry opens maintenance: update now, change settings or remove
+          portable-2-options.png|setup-11-portable.png|Without maintenance, Setup leaves nothing but the folder
+          EOF
+
+          if ! gh release view screenshots -R "$REPO" >/dev/null 2>&1; then
+            gh release create screenshots -R "$REPO" --prerelease --title "Setup screenshots" \
+              --notes "Screenshots of the Windows setup, taken by the msi job on a Windows runner. The README and the latest release show them from here."
+          fi
+          if [ ${#uploads[@]} -gt 0 ]; then
+            gh release upload screenshots -R "$REPO" "${uploads[@]}" --clobber
+          fi
+
           notes="ubo-lpa.msi version 1.0.${{ github.run_number }}, built from $GITHUB_SHA and tested by the Windows workflow.
 
-          It installs ubo-lpa for the current user without administrator rights, schedules the daily update and loads uBlock Origin into Chrome. To download and start it from PowerShell:
+          It installs ubo-lpa for the current user without administrator rights. The wizard offers the newest uBlock Origin release or the one bundled with the MSI, the Chrome profiles that get it, and whether to update daily; without maintenance it leaves nothing but the uBlock Origin folder. To download and start it from PowerShell:
 
               irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex
 
@@ -176,7 +201,13 @@ jobs:
             gh release create latest -R "$REPO" --title "ubo-lpa for Windows" \
               --notes "$notes" --latest
           fi
-          gh release upload latest -R "$REPO" "${uploads[@]}" --clobber
+          gh release upload latest -R "$REPO" ubo-lpa.msi --clobber
+          # Earlier builds uploaded the screenshots here.
+          for asset in $(gh release view latest -R "$REPO" --json assets -q '.assets[].name'); do
+            if [ "$asset" != ubo-lpa.msi ]; then
+              gh release delete-asset latest "$asset" -R "$REPO" -y
+            fi
+          done
 
       - name: Check that the public link serves this MSI
         run: |

@@ -1,9 +1,9 @@
 """
-Build the Windows MSI: the installer, Python with cryptography, and the setup
-wizard's images, packaged by WiX.
+Build the Windows MSI: the installer, Python with cryptography, the newest uBO
+release, the setup wizard's custom actions and its images, packaged by WiX.
 
-Usage, on Windows with WiX on PATH (dotnet tool install --global wix) and the
-WixToolset.UI and WixToolset.Util extensions added:
+Usage, on Windows with the .NET SDK, WiX on PATH (dotnet tool install --global
+wix) and the WixToolset.UI and WixToolset.Util extensions added:
 
     python windows/msi/build.py --version 1.0.3 --out dist
 
@@ -11,11 +11,18 @@ The embeddable Python is the official zip from python.org. pip downloads
 cryptography's Windows wheels, which are unpacked into the embedded
 Lib\\site-packages and compiled with unchecked-hash .pyc files, so Python never
 writes files the MSI does not know about.
+
+The uBO release is the newest one when the MSI is built. Setup offers it as an
+alternative to downloading the newest release at install time. GITHUB_TOKEN, if
+set, authenticates the release lookup, which CI runners otherwise share a rate
+limit for.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -59,6 +66,36 @@ def embedded_python(cache: Path, dest: Path) -> None:
         "--invalidation-mode", "unchecked-hash", str(site))
 
 
+def bundled_ubo(cache: Path, dest: Path) -> str:
+    """Download the newest uBO Chromium release into dest; return its version."""
+    request = urllib.request.Request(
+        "https://api.github.com/repos/gorhill/uBlock/releases/latest",
+        headers={"User-Agent": "ubo-lpa-build", "Accept": "application/vnd.github+json"})
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(request, timeout=60) as response:
+        version = json.load(response)["tag_name"]
+    name = f"uBlock0_{version}.chromium.zip"
+    archive = cache / name
+    if not archive.exists():
+        urllib.request.urlretrieve(
+            f"https://github.com/gorhill/uBlock/releases/download/{version}/{name}", archive)
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(archive, dest / name)
+    print(f"bundling uBO {version}", flush=True)
+    return version
+
+
+def custom_actions(work: Path) -> None:
+    """Build UboSetup.CA.dll, the wizard's custom actions, into work\\ca."""
+    out = work / "ca-build"
+    run("dotnet", "build", str(HERE / "ca" / "UboSetup.csproj"), "-c", "Release",
+        "-o", str(out), "--nologo", "-v", "minimal")
+    (work / "ca").mkdir()
+    shutil.copy2(out / "UboSetup.CA.dll", work / "ca" / "UboSetup.CA.dll")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True, help="MSI ProductVersion, a.b.c")
@@ -76,8 +113,12 @@ def main() -> int:
     shutil.copy2(REPO / "ubo-lpa.py", payload)
     shutil.copytree(REPO / "assets", payload / "assets")
     shutil.copy2(REPO / "LICENSE", payload / "LICENSE.txt")
-    shutil.copy2(HERE / "update-now.cmd", payload)
     embedded_python(cache, payload / "python")
+    ubo_version = bundled_ubo(cache, payload / "ubo")
+    # The wizard runs ubo-lpa.py before anything is installed, from this zip
+    # in the MSI's Binary table.
+    shutil.make_archive(str(work / "payload"), "zip", payload)
+    custom_actions(work)
 
     run(sys.executable, str(HERE / "art.py"), str(work / "art"))
     for name in ("package.wxs", "ui.wxs", "strings.wxl"):
@@ -87,7 +128,9 @@ def main() -> int:
     msi = args.out.resolve() / f"ubo-lpa-{args.version}.msi"
     run("wix", "build", "package.wxs", "ui.wxs", "-loc", "strings.wxl",
         "-ext", "WixToolset.UI.wixext", "-ext", "WixToolset.Util.wixext",
-        "-arch", "x64", "-d", f"Version={args.version}", "-o", str(msi), cwd=work)
+        "-arch", "x64", "-d", f"Version={args.version}",
+        "-d", f"UboVersion={ubo_version}", "-d", f"UboZip=uBlock0_{ubo_version}.chromium.zip",
+        "-o", str(msi), cwd=work)
     print(f"built {msi}")
     return 0
 

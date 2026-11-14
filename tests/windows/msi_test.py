@@ -1,13 +1,20 @@
 """
 End-to-end test of the MSI on a fresh Windows runner with retail Chrome:
-install through the setup wizard, with a click on Allow when Setup loads
-uBlock Origin into Chrome; the files, Start menu, Apps & features entry and
-scheduled task; Chrome's record of both extensions; an upgrade that keeps the
-extension IDs; and uninstall.
+
+- a first install through every page of the setup wizard, with a click on
+  Allow when Setup loads uBlock Origin into Chrome; the files, the Start menu,
+  the entry in the list of installed apps, the scheduled task, and Chrome's
+  record of both extensions;
+- the maintenance page, opened from the Start menu: Change settings turns the
+  daily update off, Update now keeps it off, and so does a silent upgrade,
+  which also keeps the extension IDs;
+- uninstall;
+- an install without maintenance, of the bundled uBO release into another
+  folder, which leaves nothing but that folder.
 
 Usage: python tests/windows/msi_test.py FIRST.msi SECOND.msi
 (SECOND has the higher version.) Needs pywinauto and Pillow. Screenshots of
-every wizard page and the logs go to $UBO_OUT.
+every wizard page go to $UBO_OUT, with chrome.txt, the Chrome the wizard found.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ import csv
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -30,9 +38,12 @@ OUT = Path(os.environ.get("UBO_OUT") or Path(tempfile.gettempdir()) / "ubo-lpa-m
 LOCAL = Path(os.environ["LOCALAPPDATA"])
 PROGRAM = LOCAL / "Programs" / "ubo-lpa"
 ROOT = LOCAL / "uBOLPA"
+PORTABLE = LOCAL / "uBOLPA-portable"
 USER_DATA = LOCAL / "Google" / "Chrome" / "User Data"
 MENU = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/uBlock Origin for Chrome"
+MAINTENANCE_LNK = MENU / "Update, change or remove uBlock Origin for Chrome.lnk"
 NAME = "uBlock Origin for Chrome (ubo-lpa)"
+TITLE = f"{NAME} Setup"
 TASK = "ubo-lpa-update"
 
 
@@ -46,7 +57,7 @@ def check(condition: bool, message: str) -> None:
 
 
 def arp_entry() -> dict | None:
-    """The Apps & features entry, from the per-user or machine uninstall keys."""
+    """The entry in the list of installed apps, from the per-user or machine uninstall keys."""
     for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
         try:
             root = winreg.OpenKey(hive, r"Software\Microsoft\Windows\CurrentVersion\Uninstall")
@@ -54,11 +65,13 @@ def arp_entry() -> dict | None:
             continue
         with root:
             for i in range(winreg.QueryInfoKey(root)[0]):
-                with winreg.OpenKey(root, winreg.EnumKey(root, i)) as key:
+                code = winreg.EnumKey(root, i)
+                with winreg.OpenKey(root, code) as key:
                     try:
                         if winreg.QueryValueEx(key, "DisplayName")[0] == NAME:
-                            return {n: winreg.QueryValueEx(key, n)[0]
-                                    for n in ("DisplayName", "DisplayVersion", "Publisher")}
+                            entry = {n: winreg.QueryValueEx(key, n)[0]
+                                     for n in ("DisplayName", "DisplayVersion", "Publisher")}
+                            return {**entry, "ProductCode": code}
                     except OSError:
                         continue
     return None
@@ -86,42 +99,143 @@ def close_chrome() -> None:
         time.sleep(3)
 
 
-def state() -> dict:
-    return json.loads((ROOT / ".state.json").read_text())
+def state(root: Path = ROOT) -> dict:
+    return json.loads((root / ".state.json").read_text())
+
+
+# --- the wizard ------------------------------------------------------------
+
+
+def wizard():
+    from pywinauto import Application
+    app = Application(backend="win32").connect(title=TITLE, timeout=120)
+    window = app.window(title=TITLE)
+    window.wait("visible ready", timeout=120)
+    return window
+
+
+def page(window, shot: str, wait: float = 2) -> list[str]:
+    """Screenshot the page shown now; return the texts of its controls."""
+    time.sleep(wait)
+    window.capture_as_image().save(OUT / f"{shot}.png")
+    texts = [c.window_text() for c in window.wrapper_object().children()]
+    note(f"{shot}: {' | '.join(t for t in texts if t)[:400]}")
+    return texts
+
+
+def click(window, title: str) -> None:
+    """Click a button by its title, as the mouse would: MSI acts on BN_CLICKED."""
+    window.child_window(title=title, class_name="Button").click()
+
+
+def wait_for_finish(window, minutes: int = 15) -> None:
+    deadline = time.time() + minutes * 60
+    while time.time() < deadline:
+        finish = window.child_window(title="&Finish", class_name="Button")
+        if finish.exists() and finish.is_enabled():
+            return
+        time.sleep(2)
+    raise Failure("the wizard did not reach its Finish page")
 
 
 def install_with_wizard(msi: Path) -> None:
-    """Click through the wizard, with a screenshot of every page."""
-    from pywinauto import Application
+    """A first install through every page, with a screenshot of each."""
     log = OUT / "install.log"
     process = subprocess.Popen(["msiexec", "/i", str(msi), "/l*v", str(log)])
-    app = Application(backend="win32").connect(title=f"{NAME} Setup", timeout=120)
-    wizard = app.window(title=f"{NAME} Setup")
-    wizard.wait("visible ready", timeout=120)
-    time.sleep(2)
-    wizard.capture_as_image().save(OUT / "wizard-1-welcome.png")
-    wizard["Next"].click()
-    time.sleep(2)
-    wizard.capture_as_image().save(OUT / "wizard-2-ready.png")
+    window = wizard()
+    texts = page(window, "wizard-1-welcome")
+    check(any("ubo-lpa" in t for t in texts), "the Welcome page's title does not name ubo-lpa")
+    click(window, "&Next")
+    texts = page(window, "wizard-2-release")
+    check(any(re.search(r"uBlock Origin \d+\.\d+\.\d+ on GitHub", t) for t in texts),
+          "the release page does not link a uBO release")
+    click(window, "&Next")
+    texts = page(window, "wizard-3-chrome")
+    chrome = next((t for t in texts if t.startswith("Google Chrome ")), "")
+    check(re.match(r"Google Chrome \d+\.\d+\.\d+\.\d+, installed for ", chrome),
+          f"the Chrome page does not show Chrome's version: {texts}")
+    (OUT / "chrome.txt").write_text(chrome, encoding="utf-8")
+    check(any("folder Default" in t for t in texts), "the Chrome page does not list the Default profile")
+    click(window, "&Next")
+    page(window, "wizard-4-options")
+    click(window, "&Next")
+    page(window, "wizard-5-ready")
     with AllowClicker(OUT) as clicker:
-        wizard["Install"].click()
-        time.sleep(4)
-        wizard.capture_as_image().save(OUT / "wizard-3-progress.png")
-        deadline = time.time() + 900
-        while time.time() < deadline:
-            finish = wizard.child_window(title="&Finish", class_name="Button")
-            if finish.exists() and finish.is_enabled():
-                break
-            time.sleep(2)
-        else:
-            raise Failure("the wizard did not reach its Finish page")
+        click(window, "&Install")
+        page(window, "wizard-6-progress", wait=4)
+        wait_for_finish(window)
     check(clicker.prompts == 1,
           f"expected one remote debugging prompt during Setup, Chrome showed {clicker.prompts}")
-    time.sleep(2)
-    wizard.capture_as_image().save(OUT / "wizard-4-finish.png")
+    page(window, "wizard-7-finish")
     screenshot(OUT / "desktop-after-install.png")
-    wizard["Finish"].click()
+    click(window, "&Finish")
     check(process.wait(timeout=120) == 0, f"msiexec /i exited with {process.returncode}")
+
+
+def maintenance(action: str, shot: str, untick_updates: bool = False) -> None:
+    """Open the maintenance page from the Start menu entry and run action on it."""
+    os.startfile(str(MAINTENANCE_LNK))  # type: ignore[attr-defined]
+    window = wizard()
+    page(window, f"{shot}-1-maintenance")
+    click(window, action)
+    if action == "&Change settings":
+        page(window, f"{shot}-2-release")
+        click(window, "&Next")
+        page(window, f"{shot}-3-chrome")
+        click(window, "&Next")
+        if untick_updates:
+            box = window.child_window(title="&Update uBlock Origin daily", class_name="Button")
+            if box.get_check_state():
+                box.click()
+            check(not box.get_check_state(), "could not untick the daily update")
+        page(window, f"{shot}-4-options")
+        click(window, "&Next")
+    page(window, f"{shot}-5-ready")
+    click(window, "&Change")
+    wait_for_finish(window)
+    page(window, f"{shot}-6-finish")
+    click(window, "&Finish")
+    window.wait_not("exists", timeout=120)
+    # Windows Installer runs one installation at a time; let this one end
+    # before the next starts.
+    time.sleep(10)
+
+
+def install_portable(msi: Path) -> str:
+    """An install without maintenance, of the bundled release, into PORTABLE.
+    Returns the bundled version the release page linked."""
+    log = OUT / "portable.log"
+    process = subprocess.Popen(["msiexec", "/i", str(msi), "/l*v", str(log)])
+    window = wizard()
+    click(window, "&Next")
+    click(window, "The release &bundled with this installer")
+    texts = page(window, "portable-1-release")
+    links = [m.group(1) for t in texts for m in [re.search(r"uBlock Origin (\d+\.\d+\.\d+) on GitHub", t)] if m]
+    check(links, f"the release page links no release: {texts}")
+    bundled = links[-1]
+    click(window, "&Next")
+    click(window, "&Next")
+    folder = window.child_window(class_name="Edit")
+    folder.set_edit_text(str(PORTABLE))
+    folder.type_keys("{TAB}")
+    box = window.child_window(title_re=r"Install &maintenance.*", class_name="Button")
+    box.click()
+    check(not box.get_check_state(), "could not untick maintenance")
+    page(window, "portable-2-options")
+    click(window, "&Next")
+    page(window, "portable-3-ready")
+    with AllowClicker(OUT / "portable") as clicker:
+        click(window, "&Install")
+        wait_for_finish(window)
+    check(clicker.prompts == 1,
+          f"expected one remote debugging prompt during the portable install, Chrome showed {clicker.prompts}")
+    page(window, "portable-4-finish")
+    click(window, "&Finish")
+    check(process.wait(timeout=120) == 0, f"msiexec /i exited with {process.returncode}")
+    return bundled
+
+
+# --- checks ----------------------------------------------------------------
 
 
 def verify_install(version: str) -> None:
@@ -129,26 +243,34 @@ def verify_install(version: str) -> None:
                  PROGRAM / "assets", ROOT / "extension" / "manifest.json",
                  ROOT / "companion" / "manifest.json"):
         check(path.exists(), f"missing {path}")
-    for name in ("Load uBlock Origin into Chrome.lnk", "Update uBlock Origin now.lnk",
-                 "uBlock Origin update log.lnk"):
+    check(list((PROGRAM / "ubo").glob("uBlock0_*.chromium.zip")), "the bundled uBO release is missing")
+    for name in (MAINTENANCE_LNK.name, "uBlock Origin update log.lnk"):
         check((MENU / name).exists(), f"missing Start menu entry {name}")
     entry = arp_entry()
     check(entry is not None and entry["DisplayVersion"] == version,
-          f"Apps & features entry: {entry}")
-    xml = subprocess.run(["schtasks", "/Query", "/TN", TASK, "/XML"],
-                         capture_output=True, text=True).stdout
-    check(str(PROGRAM / "python" / "pythonw.exe").lower() in xml.lower(),
-          "the scheduled task does not run the installed pythonw.exe")
-    note(f"installed {version}: files, Start menu, Apps & features and the task are in place")
+          f"entry in the list of installed apps: {entry}")
+    note(f"installed {version}: files, Start menu and the entry in the list of installed apps are in place")
 
 
-def verify_chrome(ubo_id: str, comp_id: str) -> None:
+def verify_task(present: bool) -> None:
+    if present:
+        xml = subprocess.run(["schtasks", "/Query", "/TN", TASK, "/XML"],
+                             capture_output=True, text=True).stdout
+        check(str(PROGRAM / "python" / "pythonw.exe").lower() in xml.lower(),
+              "the scheduled task does not run the installed pythonw.exe")
+    else:
+        check(not task_fields(), "the scheduled task is still there")
+    check(state().get("autoupdate") is present, f"the state file records autoupdate {state().get('autoupdate')}")
+    note(f"the daily update is {'on' if present else 'off'}")
+
+
+def verify_chrome(ubo_id: str, comp_id: str, root: Path = ROOT) -> None:
     close_chrome()
     secure = json.loads((USER_DATA / "Default" / "Secure Preferences").read_text(encoding="utf-8"))
     prefs = json.loads((USER_DATA / "Default" / "Preferences").read_text(encoding="utf-8"))
     settings = {**prefs.get("extensions", {}).get("settings", {}),
                 **secure.get("extensions", {}).get("settings", {})}
-    for ext_id, folder in ((ubo_id, ROOT / "extension"), (comp_id, ROOT / "companion")):
+    for ext_id, folder in ((ubo_id, root / "extension"), (comp_id, root / "companion")):
         entry = settings.get(ext_id) or {}
         check(os.path.normcase(entry.get("path", "")) == os.path.normcase(str(folder)),
               f"{ext_id} is not loaded from {folder}: {entry.get('path')}")
@@ -159,7 +281,7 @@ def verify_chrome(ubo_id: str, comp_id: str) -> None:
     remote = json.loads((USER_DATA / "Local State").read_text(encoding="utf-8"))
     check(not remote.get("devtools", {}).get("remote_debugging", {}).get("user-enabled"),
           "remote debugging is still on")
-    note("Chrome kept both extensions, loaded from the install and enabled")
+    note(f"Chrome kept both extensions, loaded from {root} and enabled")
 
 
 def run_task() -> None:
@@ -177,6 +299,14 @@ def run_task() -> None:
     note("the scheduled update ran with Last Result 0")
 
 
+def verify_removed() -> None:
+    check(not ROOT.exists(), f"uninstall left {ROOT}")
+    check(not PROGRAM.exists(), f"uninstall left {PROGRAM}: {list(PROGRAM.rglob('*'))[:10]}")
+    check(not MENU.exists(), "uninstall left the Start menu folder")
+    check(arp_entry() is None, "uninstall left the entry in the list of installed apps")
+    check(not task_fields(), "uninstall left the scheduled task")
+
+
 def main() -> int:
     first, second = (Path(a).resolve() for a in sys.argv[1:3])
     version = lambda msi: msi.stem.split("-")[-1]  # noqa: E731
@@ -186,27 +316,44 @@ def main() -> int:
     try:
         install_with_wizard(first)
         verify_install(version(first))
+        verify_task(present=True)
         ids = state()["ext_id"], state()["comp_id"]
         verify_chrome(*ids)
         run_task()
+
+        note("maintenance: Change settings, without the daily update")
+        maintenance("&Change settings", "maintenance-change", untick_updates=True)
+        verify_task(present=False)
+        note("maintenance: Update now")
+        maintenance("&Update now", "maintenance-update")
+        verify_task(present=False)
 
         note(f"upgrading to {version(second)}")
         result = subprocess.run(["msiexec", "/i", str(second), "/qn", "/l*v",
                                  str(OUT / "upgrade.log")], timeout=900)
         check(result.returncode == 0, f"the upgrade exited with {result.returncode}")
         verify_install(version(second))
+        verify_task(present=False)
         check((state()["ext_id"], state()["comp_id"]) == ids, "the upgrade changed the extension IDs")
         verify_chrome(*ids)
 
         result = subprocess.run(["msiexec", "/x", str(second), "/qn", "/l*v",
                                  str(OUT / "uninstall.log")], timeout=900)
         check(result.returncode == 0, f"the uninstall exited with {result.returncode}")
-        check(not ROOT.exists(), f"uninstall left {ROOT}")
-        check(not PROGRAM.exists(), f"uninstall left {PROGRAM}: {list(PROGRAM.rglob('*'))[:10]}")
-        check(not MENU.exists(), "uninstall left the Start menu folder")
-        check(arp_entry() is None, "uninstall left the Apps & features entry")
-        check(not task_fields(), "uninstall left the scheduled task")
-        note("uninstall removed the program, the extension folders, the menu, the entry and the task")
+        verify_removed()
+        note("uninstall removed the program, the extension folder, the menu, the entry and the task")
+
+        bundled = install_portable(first)
+        check(arp_entry() is None, "the install without maintenance registered itself")
+        check(not PROGRAM.exists(), f"the install without maintenance installed {PROGRAM}")
+        check(not MENU.exists(), "the install without maintenance created Start menu entries")
+        check(not task_fields(), "the install without maintenance scheduled the update")
+        check(not ROOT.exists(), f"the install without maintenance used {ROOT}")
+        portable = state(PORTABLE)
+        check(portable.get("version") == bundled,
+              f"the install without maintenance has uBO {portable.get('version')}, not the bundled {bundled}")
+        verify_chrome(portable["ext_id"], portable["comp_id"], PORTABLE)
+        note(f"the install without maintenance left only {PORTABLE}, with the bundled uBO {bundled}")
     except Failure as exc:
         note(f"FAIL: {exc}")
         screenshot(OUT / "failure.png")

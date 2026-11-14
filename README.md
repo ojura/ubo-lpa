@@ -24,7 +24,13 @@ or run in PowerShell:
 irm https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.ps1 | iex
 ```
 
-Both set up a daily update. The patched uBO starts with uBlock Origin's default
+<p align="center">
+  <a href="#setup-on-windows"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-3-chrome.png" width="560" alt="The setup wizard's Chrome page, with the Chrome version it found and the profiles that get uBlock Origin"></a><br>
+  <sub>The Windows setup on a current Chrome, in which Manifest V2 extensions no longer run</sub>
+</p>
+
+Both set up a daily update; the Windows setup can also leave it out, or install
+without maintenance, leaving nothing but the uBlock Origin folder. The patched uBO starts with uBlock Origin's default
 settings; to keep the current ones, back them up from the stock uBO's dashboard
 first and restore them afterwards. [Installation details](#installation-details)
 describes each route.
@@ -51,8 +57,10 @@ starts from uBlock Origin's defaults. An existing uBO's filter lists, custom
 rules and settings remain in that extension's storage and are not carried over.
 Export them from the stock uBO's dashboard first and import them afterwards.
 
-On Windows, the installer writes the patched uBO and companion directories. Both
-must then be loaded manually from `chrome://extensions`.
+On Windows, the installer writes the patched uBO and companion folders, and
+`load` loads them into the chosen Chrome profiles through Chrome's own Load
+unpacked, as a user would by hand. Chrome then keeps them like any other
+unpacked extension.
 
 On Linux the installer adds both extensions to each Chrome profile it finds
 under `$XDG_CONFIG_HOME` (default `~/.config`) in `google-chrome`, `-beta`,
@@ -111,12 +119,14 @@ profile, `install` keeps a copy of the original `Preferences` as
 
 | command | |
 |---|---|
-| `install` | download and patch uBO, build the companion, inject both into every profile |
+| `install` | download and patch uBO, build the companion, inject both into every profile; `--ubo-zip` installs a given uBO release zip instead of the newest release |
 | `update` | alias for `install`; rebuilds a current, consistent installation only after a confirmation prompt |
 | `check` | verify required files, IDs, cross-references and patch markers |
 | `status` | report installed versions, IDs and paths |
 | `uninstall` | remove both extensions and undo the profile changes [listed above](#what-the-installer-does) |
-| `timer` | run `install` daily: a systemd user timer on Linux, a scheduled task on Windows |
+| `timer` | run `install` daily: a systemd user timer on Linux, a scheduled task on Windows; `--off` removes it, `--keep` sets it up unless it was switched off |
+| `load` | Windows: load both extensions into Chrome; `--profiles` names the profile folders, separated by `\|` |
+| `setup-info` | print, as JSON, what the Windows setup wizard shows: Chrome, its profiles and the uBO releases |
 
 The timer runs `install` once a day, whether or not Chrome is open. If a
 profile still needs the extensions added, such as a profile created since the
@@ -134,12 +144,58 @@ built and tested from the newest commit on `main`, published as the
 not code-signed, so Windows SmartScreen warns about it. The release page shows
 each step of the setup, from screenshots the msi job takes on a Windows runner.
 
-The MSI installs everything for the current user, without administrator rights.
-It brings its own Python, downloads and patches uBO into
-`%LOCALAPPDATA%\uBOLPA`, schedules the daily update, and loads both extensions
-into Chrome. Chrome asks once whether to allow remote debugging; a click on
+The MSI installs everything for the current user, without administrator rights,
+and brings its own Python and the newest uBO release at the time it was built.
+Its wizard asks:
+
+- which uBO release to install: the newest one, downloaded from GitHub, or the
+  bundled one, each with a link to its release notes;
+- which Chrome profiles get it. The page shows the Chrome it found, its version
+  and whether it is installed for this user or for all users;
+- which folder to keep it in, `%LOCALAPPDATA%\uBOLPA` by default;
+- whether to install maintenance and whether to update daily, both on by
+  default.
+
+Setup then patches uBO into the folder and loads both extensions into the chosen
+profiles. Chrome asks once whether to allow remote debugging; a click on
 **Allow** is the only step Setup leaves to the user. If Chrome is running at
 that moment, Setup asks to restart it first, and Chrome reopens its tabs.
+
+Maintenance is the updater in `%LOCALAPPDATA%\Programs\ubo-lpa`, the daily
+update, an entry in the list of installed apps and a Start menu entry, "Update,
+change or remove uBlock Origin for Chrome". That entry reopens Setup at its
+maintenance page: **Update now**, **Change settings** (release, profiles, daily
+update) or **Remove**. Without maintenance, Setup works from its own temporary
+copy and leaves nothing but the uBlock Origin folder, as a portable install.
+Running the MSI again with the same folder updates it, and keeps uBO's settings.
+
+#### Setup on Windows
+
+These screenshots come from the msi job's test on a Windows runner, taken anew
+for every build of the MSI.
+
+<table>
+<tr>
+<td align="center" valign="top" width="33%"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-1-welcome.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-1-welcome.png" width="260" alt="Welcome page"></a><br><sub>Welcome</sub></td>
+<td align="center" valign="top" width="33%"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-2-release.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-2-release.png" width="260" alt="Release page"></a><br><sub>The newest uBO release, or the bundled one</sub></td>
+<td align="center" valign="top" width="33%"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-3-chrome.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-3-chrome.png" width="260" alt="Chrome page"></a><br><sub>A current Chrome, without Manifest V2, and its profiles</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-4-options.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-4-options.png" width="260" alt="Options page"></a><br><sub>Folder, maintenance and daily update</sub></td>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-5-ready.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-5-ready.png" width="260" alt="Ready page"></a><br><sub>Ready to install</sub></td>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-6-progress.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-6-progress.png" width="260" alt="Progress page"></a><br><sub>Installing</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-7-chrome-prompt.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-7-chrome-prompt.png" width="260" alt="Chrome's remote debugging prompt"></a><br><sub>The one click: Allow in Chrome's prompt</sub></td>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-8-finish.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-8-finish.png" width="260" alt="Finish page"></a><br><sub>Finished</sub></td>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-9-chrome.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-9-chrome.png" width="260" alt="Chrome with the uBlock Origin button"></a><br><sub>uBlock Origin in Chrome, its button pinned</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-10-maintenance.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-10-maintenance.png" width="260" alt="Maintenance page"></a><br><sub>Maintenance, from the Start menu</sub></td>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-11-portable.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-11-portable.png" width="260" alt="Options page without maintenance"></a><br><sub>Without maintenance: a portable install</sub></td>
+<td></td>
+</tr>
+</table>
 
 From a checkout, with Python and `cryptography`:
 
@@ -158,8 +214,10 @@ works as well, once:
 
 1. Open `chrome://extensions`
 2. Turn on **Developer mode**
-3. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\extension`
-4. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\companion`
+3. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\extension`, or `extension`
+   in the folder chosen in Setup
+4. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\companion`, or `companion`
+   in that folder
 5. Open **Details** of "uBlock Origin toolbar button" and turn on **Allow user
    scripts**, so uBO's scriptlets run before the page's own scripts
 
@@ -187,7 +245,8 @@ assets/             the .js and .html files added to uBO and the companion
 linux/ubo-lpa.sh    launcher
 windows/ubo-lpa.ps1 launcher
 tests/e2e/          browser harness, diagnostics tests, AF_UNIX shim for Wine
-windows/msi/        the MSI: WiX sources, setup art and build script
+windows/msi/        the MSI: WiX sources, setup art, the wizard's custom
+                    actions and the build script
 tests/windows/      Windows runner tests of load, the scheduled task, updates
                     and the MSI
 WRITEUP.md          technical design, and why Windows needs a manual install

@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The setup wizard: Welcome, Ready to install, progress, Finish. It follows
-  WiX's WixUI_Minimal without its license page: ubo-lpa and uBO are GPL-3.0,
+  The setup wizard. A first install: Welcome, the uBO release, Chrome and its
+  profiles, the folder and the options, Ready, progress, Finish. The Start menu
+  entry, or Modify in Apps & features, opens the maintenance page instead:
+  Update now, Change settings (the same three pages) or Remove.
+
+  WiX's WixUI supplies Welcome, Ready, progress, Finish, the folder browser and
+  the error dialogs. There is no license page: ubo-lpa and uBO are GPL-3.0,
   which asks for no acceptance before installing.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
@@ -11,7 +16,11 @@
       <TextStyle Id="WixUI_Font_Bigger" FaceName="Segoe UI" Size="12" />
       <TextStyle Id="WixUI_Font_Title" FaceName="Segoe UI" Size="9" Bold="yes" />
       <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <!-- The folder control and the folder browser edit the directory whose
+           name this property holds, as WixUI's InstallDirDlg does. -->
+      <Property Id="UBOLPA_DIR_PROP" Value="UBOLPA_DIR" />
 
+      <DialogRef Id="BrowseDlg" />
       <DialogRef Id="ErrorDlg" />
       <DialogRef Id="FatalError" />
       <DialogRef Id="FilesInUse" />
@@ -22,20 +31,145 @@
       <DialogRef Id="UserExit" />
       <DialogRef Id="WelcomeDlg" />
       <DialogRef Id="VerifyReadyDlg" />
-      <DialogRef Id="MaintenanceWelcomeDlg" />
-      <DialogRef Id="MaintenanceTypeDlg" />
 
-      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" />
-      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg"
-               Order="1" Condition="NOT Installed" />
-      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg"
-               Order="2" Condition="Installed" />
-      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
-      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
-      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
-      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
-
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="UboReleaseDlg" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="UboOptionsDlg"
+               Order="1" Condition="WixUI_InstallMode=&quot;Install&quot; OR UBOLPA_MODE=&quot;change&quot;" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="UboMaintenanceDlg"
+               Order="2" Condition="Installed AND UBOLPA_MODE&lt;&gt;&quot;change&quot;" />
       <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <InstallUISequence>
+        <Show Dialog="UboMaintenanceDlg" Before="ProgressDlg"
+              Condition="Installed AND NOT RESUME AND NOT Preselected AND NOT PATCH" />
+      </InstallUISequence>
+
+      <!-- Which uBlock Origin release to install. -->
+      <Dialog Id="UboReleaseDlg" Width="370" Height="270" Title="!(loc.UboDlgTitle)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="290" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboReleaseTitle)" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboReleaseDescription)" />
+        <Control Id="Source" Type="RadioButtonGroup" X="20" Y="55" Width="330" Height="96" Property="UBOLPA_SOURCE">
+          <RadioButtonGroup Property="UBOLPA_SOURCE">
+            <RadioButton Value="github" X="0" Y="0" Width="330" Height="15" Text="!(loc.UboReleaseNewest)" />
+            <RadioButton Value="bundled" X="0" Y="48" Width="330" Height="15" Text="!(loc.UboReleaseBundled)" />
+          </RadioButtonGroup>
+        </Control>
+        <Control Id="NewestLink" Type="Hyperlink" X="38" Y="72" Width="310" Height="12" HideCondition="NOT UBOLPA_LATEST" ShowCondition="UBOLPA_LATEST"
+                 Text="&lt;a href=&quot;[UBOLPA_LATEST_URL]&quot;&gt;uBlock Origin [UBOLPA_LATEST] on GitHub&lt;/a&gt;" />
+        <Control Id="NewestMissing" Type="Text" X="38" Y="72" Width="310" Height="24" NoPrefix="yes" HideCondition="UBOLPA_LATEST" ShowCondition="NOT UBOLPA_LATEST" Text="!(loc.UboReleaseNoGitHub)" />
+        <Control Id="BundledLink" Type="Hyperlink" X="38" Y="120" Width="310" Height="12"
+                 Text="&lt;a href=&quot;[UBOLPA_BUNDLED_URL]&quot;&gt;uBlock Origin [UBOLPA_BUNDLED] on GitHub&lt;/a&gt;" />
+        <Control Id="Note" Type="Text" X="20" Y="160" Width="330" Height="40" NoPrefix="yes" Text="!(loc.UboReleaseNote)" />
+        <Control Id="ProbeError" Type="Text" X="20" Y="200" Width="330" Height="30" NoPrefix="yes" HideCondition="NOT UBOLPA_PROBE_ERROR" ShowCondition="UBOLPA_PROBE_ERROR" Text="!(loc.UboProbeError)" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="WelcomeDlg" Condition="NOT Installed" />
+          <Publish Event="NewDialog" Value="UboMaintenanceDlg" Condition="Installed" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="UboChromeDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <!-- Which Chrome, and which of its profiles get uBlock Origin. -->
+      <Dialog Id="UboChromeDlg" Width="370" Height="270" Title="!(loc.UboDlgTitle)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="290" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboChromeTitle)" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboChromeDescription)" />
+        <Control Id="Chrome" Type="Text" X="20" Y="52" Width="330" Height="13" NoPrefix="yes" HideCondition="NOT UBOLPA_CHROME_FOUND" ShowCondition="UBOLPA_CHROME_FOUND" Text="{\WixUI_Font_Title}[UBOLPA_CHROME_TEXT]" />
+        <Control Id="NoChrome" Type="Text" X="20" Y="52" Width="330" Height="40" NoPrefix="yes" HideCondition="UBOLPA_CHROME_FOUND" ShowCondition="NOT UBOLPA_CHROME_FOUND" Text="!(loc.UboChromeMissing)" />
+        <Control Id="ProfilesLabel" Type="Text" X="20" Y="70" Width="330" Height="13" NoPrefix="yes" HideCondition="NOT UBOLPA_P1_DIR" ShowCondition="UBOLPA_P1_DIR" Text="!(loc.UboChromeProfiles)" />
+        <Control Id="P1" Type="CheckBox" X="26" Y="86" Width="324" Height="15" Property="UBOLPA_P1" CheckBoxValue="1" Text="[UBOLPA_P1_LABEL]" HideCondition="NOT UBOLPA_P1_DIR" ShowCondition="UBOLPA_P1_DIR" DisableCondition="UBOLPA_P1_LOADED" />
+        <Control Id="P2" Type="CheckBox" X="26" Y="102" Width="324" Height="15" Property="UBOLPA_P2" CheckBoxValue="1" Text="[UBOLPA_P2_LABEL]" HideCondition="NOT UBOLPA_P2_DIR" ShowCondition="UBOLPA_P2_DIR" DisableCondition="UBOLPA_P2_LOADED" />
+        <Control Id="P3" Type="CheckBox" X="26" Y="118" Width="324" Height="15" Property="UBOLPA_P3" CheckBoxValue="1" Text="[UBOLPA_P3_LABEL]" HideCondition="NOT UBOLPA_P3_DIR" ShowCondition="UBOLPA_P3_DIR" DisableCondition="UBOLPA_P3_LOADED" />
+        <Control Id="P4" Type="CheckBox" X="26" Y="134" Width="324" Height="15" Property="UBOLPA_P4" CheckBoxValue="1" Text="[UBOLPA_P4_LABEL]" HideCondition="NOT UBOLPA_P4_DIR" ShowCondition="UBOLPA_P4_DIR" DisableCondition="UBOLPA_P4_LOADED" />
+        <Control Id="P5" Type="CheckBox" X="26" Y="150" Width="324" Height="15" Property="UBOLPA_P5" CheckBoxValue="1" Text="[UBOLPA_P5_LABEL]" HideCondition="NOT UBOLPA_P5_DIR" ShowCondition="UBOLPA_P5_DIR" DisableCondition="UBOLPA_P5_LOADED" />
+        <Control Id="P6" Type="CheckBox" X="26" Y="166" Width="324" Height="15" Property="UBOLPA_P6" CheckBoxValue="1" Text="[UBOLPA_P6_LABEL]" HideCondition="NOT UBOLPA_P6_DIR" ShowCondition="UBOLPA_P6_DIR" DisableCondition="UBOLPA_P6_LOADED" />
+        <Control Id="P7" Type="CheckBox" X="26" Y="182" Width="324" Height="15" Property="UBOLPA_P7" CheckBoxValue="1" Text="[UBOLPA_P7_LABEL]" HideCondition="NOT UBOLPA_P7_DIR" ShowCondition="UBOLPA_P7_DIR" DisableCondition="UBOLPA_P7_LOADED" />
+        <Control Id="P8" Type="CheckBox" X="26" Y="198" Width="324" Height="15" Property="UBOLPA_P8" CheckBoxValue="1" Text="[UBOLPA_P8_LABEL]" HideCondition="NOT UBOLPA_P8_DIR" ShowCondition="UBOLPA_P8_DIR" DisableCondition="UBOLPA_P8_LOADED" />
+        <Control Id="More" Type="Text" X="26" Y="216" Width="324" Height="13" NoPrefix="yes" HideCondition="NOT UBOLPA_PROFILES_MORE" ShowCondition="UBOLPA_PROFILES_MORE" Text="!(loc.UboChromeMore)" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="UboReleaseDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="DoAction" Value="UboSelectProfiles" Order="1" />
+          <Publish Event="NewDialog" Value="UboOptionsDlg" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <!-- The folder, maintenance and the daily update. -->
+      <Dialog Id="UboOptionsDlg" Width="370" Height="270" Title="!(loc.UboDlgTitle)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="290" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboOptionsTitle)" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboOptionsDescription)" />
+        <Control Id="FolderLabel" Type="Text" X="20" Y="52" Width="330" Height="13" NoPrefix="yes" Text="!(loc.UboOptionsFolder)" />
+        <Control Id="Folder" Type="PathEdit" X="20" Y="67" Width="268" Height="18" Property="UBOLPA_DIR_PROP" Indirect="yes" HideCondition="Installed" />
+        <Control Id="ChangeFolder" Type="PushButton" X="294" Y="67" Width="56" Height="17" Text="!(loc.UboOptionsChange)" HideCondition="Installed">
+          <Publish Property="_BrowseProperty" Value="[UBOLPA_DIR_PROP]" Order="1" />
+          <Publish Event="SpawnDialog" Value="BrowseDlg" Order="2" />
+        </Control>
+        <Control Id="FolderFixed" Type="Text" X="20" Y="69" Width="330" Height="13" NoPrefix="yes" HideCondition="NOT Installed" ShowCondition="Installed" Text="[UBOLPA_DIR]" />
+        <Control Id="Maintenance" Type="CheckBox" X="20" Y="98" Width="330" Height="26" Property="UBOLPA_MAINTENANCE" CheckBoxValue="1" HideCondition="Installed" Text="!(loc.UboOptionsMaintenance)" />
+        <Control Id="Updates" Type="CheckBox" X="20" Y="130" Width="330" Height="15" Property="AUTOUPDATE" CheckBoxValue="1" DisableCondition="NOT UBOLPA_MAINTENANCE AND NOT Installed" EnableCondition="UBOLPA_MAINTENANCE OR Installed" Text="!(loc.UboOptionsUpdates)" />
+        <Control Id="Portable" Type="Text" X="20" Y="154" Width="330" Height="52" NoPrefix="yes" HideCondition="UBOLPA_MAINTENANCE OR Installed" ShowCondition="NOT UBOLPA_MAINTENANCE AND NOT Installed" Text="!(loc.UboOptionsPortable)" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="UboChromeDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="SetTargetPath" Value="[UBOLPA_DIR_PROP]" Order="1" Condition="NOT Installed" />
+          <Publish Property="UBOLPA_TIMER_ARG" Value="{}" Order="2" Condition="AUTOUPDATE AND (UBOLPA_MAINTENANCE OR Installed)" />
+          <Publish Property="UBOLPA_TIMER_ARG" Value="--off" Order="3" Condition="NOT AUTOUPDATE" />
+          <Publish Property="WixUI_InstallMode" Value="Install" Order="4" Condition="NOT Installed" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="5" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <!-- Maintenance: what the Start menu entry and Modify in Apps & features open. -->
+      <Dialog Id="UboMaintenanceDlg" Width="370" Height="270" Title="!(loc.UboDlgTitle)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="290" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboMaintenanceTitle)" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboMaintenanceDescription)" />
+        <Control Id="UpdateButton" Type="PushButton" X="20" Y="58" Width="110" Height="17" Default="yes" Text="!(loc.UboMaintenanceUpdate)">
+          <Publish Property="UBOLPA_MODE" Value="update" Order="1" />
+          <Publish Property="WixUI_InstallMode" Value="Change" Order="2" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
+        </Control>
+        <Control Id="UpdateText" Type="Text" X="138" Y="56" Width="214" Height="40" NoPrefix="yes" Text="!(loc.UboMaintenanceUpdateText)" />
+        <Control Id="ChangeButton" Type="PushButton" X="20" Y="110" Width="110" Height="17" Text="!(loc.UboMaintenanceChange)">
+          <Publish Property="UBOLPA_MODE" Value="change" Order="1" />
+          <Publish Property="WixUI_InstallMode" Value="Change" Order="2" />
+          <Publish Event="NewDialog" Value="UboReleaseDlg" Order="3" />
+        </Control>
+        <Control Id="ChangeText" Type="Text" X="138" Y="108" Width="214" Height="40" NoPrefix="yes" Text="!(loc.UboMaintenanceChangeText)" />
+        <Control Id="RemoveButton" Type="PushButton" X="20" Y="162" Width="110" Height="17" Text="!(loc.UboMaintenanceRemove)">
+          <Publish Property="UBOLPA_MODE" Value="remove" Order="1" />
+          <Publish Property="WixUI_InstallMode" Value="Remove" Order="2" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
+        </Control>
+        <Control Id="RemoveText" Type="Text" X="138" Y="160" Width="214" Height="52" NoPrefix="yes" Text="!(loc.UboMaintenanceRemoveText)" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Disabled="yes" Text="!(loc.WixUIBack)" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Disabled="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
     </UI>
     <UIRef Id="WixUI_Common" />
   </Fragment>

@@ -1,9 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Per-user MSI for ubo-lpa. It installs the installer itself, with an embedded
-  Python, to %LOCALAPPDATA%\Programs\ubo-lpa, then runs it: install downloads and
-  patches uBO into %LOCALAPPDATA%\uBOLPA, and timer schedules the daily update.
-  build.py assembles payload\ and the images, then calls wix build.
+  Per-user MSI for ubo-lpa. With maintenance, the default, it installs the
+  installer itself, with an embedded Python, to %LOCALAPPDATA%\Programs\ubo-lpa,
+  and runs it: install patches uBO into the chosen folder (%LOCALAPPDATA%\uBOLPA
+  by default), timer schedules the daily update, load loads both extensions into
+  the chosen Chrome profiles. A Start menu entry reruns this MSI to update,
+  change or remove it.
+
+  Without maintenance, the wizard does the same work from its own temporary
+  copy of the payload and skips ExecuteAction, so Windows Installer installs and
+  registers nothing: the chosen folder is all that is left.
+
+  build.py assembles payload\, payload.zip, the custom actions and the images,
+  then calls wix build with Version, UboVersion and UboZip.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
@@ -14,7 +23,7 @@
            Scope="perUser"
            Compressed="yes">
 
-    <!-- The upgrade keeps %LOCALAPPDATA%\uBOLPA and its keys: RemoveExtensions
+    <!-- The upgrade keeps the extension folder and its keys: RemoveExtensions
          below does not run when a newer version replaces this one. -->
     <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <MediaTemplate EmbedCab="yes" />
@@ -23,16 +32,35 @@
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/ojura/ubo-lpa" />
     <Property Id="ARPHELPLINK" Value="https://github.com/ojura/ubo-lpa#readme" />
-    <Property Id="ARPNOMODIFY" Value="1" />
+    <!-- Modify in Apps & features opens the maintenance page. Repair would
+         reinstall files from the original MSI, which may be gone. -->
     <Property Id="ARPNOREPAIR" Value="1" />
 
     <WixVariable Id="WixUIBannerBmp" Value="art\banner.bmp" />
     <WixVariable Id="WixUIDialogBmp" Value="art\dialog.bmp" />
 
+    <!-- The wizard's choices. Their defaults are what a silent install uses. -->
+    <Property Id="UBOLPA_SOURCE" Value="github" Secure="yes" />
+    <Property Id="UBOLPA_MAINTENANCE" Value="1" Secure="yes" />
+    <Property Id="AUTOUPDATE" Value="1" Secure="yes" />
+    <!-- timer's option: the options page sets it to "" or "off". keep, the
+         default, schedules the update unless an earlier setup switched it off. -->
+    <Property Id="UBOLPA_TIMER_ARG" Value="--keep" Secure="yes" />
+    <Property Id="UBOLPA_PROFILES" Secure="yes" />
+    <Property Id="UBOLPA_SKIP_LOAD" Secure="yes" />
+    <Property Id="UBOLPA_BUNDLED" Value="$(UboVersion)" />
+    <Property Id="UBOLPA_BUNDLED_URL" Value="https://github.com/gorhill/uBlock/releases/tag/$(UboVersion)" />
+    <!-- The folder chosen at install, which maintenance and upgrades reuse. -->
+    <Property Id="UBOLPA_DIR" Secure="yes">
+      <RegistrySearch Id="RememberedFolder" Root="HKCU" Key="Software\ubo-lpa"
+                      Name="ExtensionDir" Type="raw" />
+    </Property>
+
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsFolder" Name="Programs">
         <Directory Id="INSTALLFOLDER" Name="ubo-lpa" />
       </Directory>
+      <Directory Id="UBOLPA_DIR" Name="uBOLPA" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="MenuFolder" Name="uBlock Origin for Chrome" />
@@ -43,18 +71,13 @@
     </ComponentGroup>
 
     <Component Id="MenuShortcuts" Directory="MenuFolder">
-      <Shortcut Id="LoadShortcut" Name="Load uBlock Origin into Chrome"
-                Description="Load both folders into Chrome again, after a click on Allow in Chrome"
-                Target="[INSTALLFOLDER]python\pythonw.exe"
-                Arguments="&quot;[INSTALLFOLDER]ubo-lpa.py&quot; load"
-                WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
-      <Shortcut Id="UpdateShortcut" Name="Update uBlock Origin now"
-                Description="Check for a new uBlock Origin release and install it"
-                Target="[INSTALLFOLDER]update-now.cmd" WorkingDirectory="INSTALLFOLDER"
+      <Shortcut Id="MaintenanceShortcut" Name="Update, change or remove uBlock Origin for Chrome"
+                Description="Update uBlock Origin now, choose Chrome profiles and daily updates, or remove ubo-lpa"
+                Target="[SystemFolder]msiexec.exe" Arguments="/i [ProductCode]"
                 Icon="AppIcon" />
       <Shortcut Id="LogShortcut" Name="uBlock Origin update log"
                 Description="Output of the daily update"
-                Target="[LocalAppDataFolder]uBOLPA\update.log" />
+                Target="[UBOLPA_DIR]update.log" />
       <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
       <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
       <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
@@ -62,49 +85,79 @@
                      Value="1" KeyPath="yes" />
     </Component>
 
+    <Component Id="Settings" Directory="UBOLPA_DIR">
+      <RegistryValue Root="HKCU" Key="Software\ubo-lpa" Name="ExtensionDir" Type="string"
+                     Value="[UBOLPA_DIR]" KeyPath="yes" />
+      <RemoveFolder Id="RemoveExtensionFolder" On="uninstall" />
+    </Component>
+
     <Feature Id="Main">
       <ComponentGroupRef Id="Payload" />
       <ComponentRef Id="MenuShortcuts" />
+      <ComponentRef Id="Settings" />
     </Feature>
 
+    <!-- The payload again, as one zip, for the wizard: UboProbe runs ubo-lpa.py
+         from it before anything is installed, and an install without
+         maintenance runs entirely from it. -->
+    <Binary Id="UboPayload" SourceFile="payload.zip" />
+    <Binary Id="UboSetupCA" SourceFile="ca\UboSetup.CA.dll" />
+    <CustomAction Id="UboProbe" BinaryRef="UboSetupCA" DllEntry="UboProbe" Execute="immediate" Return="check" />
+    <CustomAction Id="UboSelectProfiles" BinaryRef="UboSetupCA" DllEntry="UboSelectProfiles" Execute="immediate" Return="check" />
+    <CustomAction Id="UboPortable" BinaryRef="UboSetupCA" DllEntry="UboPortable" Execute="immediate" Return="check" />
+    <CustomAction Id="UboCleanup" BinaryRef="UboSetupCA" DllEntry="UboCleanup" Execute="immediate" Return="ignore" />
+
+    <InstallUISequence>
+      <Custom Action="UboProbe" After="CostFinalize" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="UboPortable" After="ProgressDlg" Condition="NOT Installed AND NOT UBOLPA_MAINTENANCE" />
+      <ExecuteAction Condition="Installed OR UBOLPA_MAINTENANCE" />
+      <Custom Action="UboCleanup" After="ExecuteAction" />
+    </InstallUISequence>
+
     <!-- pythonw.exe has no console; ubo-lpa.py then appends its output to
-         %LOCALAPPDATA%\uBOLPA\update.log, which the Start menu links to. -->
-    <SetProperty Id="StageExtensions" Sequence="execute" Before="StageExtensions"
-                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; install --non-interactive" />
+         update.log in the extension folder, which the Start menu links to.
+         "[UBOLPA_DIR]." ends in a dot because the directory ends in a
+         backslash, which would otherwise escape the closing quote. -->
+    <SetProperty Action="SetStageFromGitHub" Id="StageExtensions" Sequence="execute"
+                 Before="StageExtensions" Condition="UBOLPA_SOURCE&lt;&gt;&quot;bundled&quot;"
+                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; install --non-interactive --dir &quot;[UBOLPA_DIR].&quot;" />
+    <SetProperty Action="SetStageBundled" Id="StageExtensions" Sequence="execute"
+                 Before="StageExtensions" Condition="UBOLPA_SOURCE=&quot;bundled&quot;"
+                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; install --non-interactive --dir &quot;[UBOLPA_DIR].&quot; --ubo-zip &quot;[INSTALLFOLDER]ubo\$(UboZip)&quot;" />
     <CustomAction Id="StageExtensions" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
                   DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="check" />
     <SetProperty Id="ScheduleUpdates" Sequence="execute" Before="ScheduleUpdates"
-                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; timer" />
+                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; timer [UBOLPA_TIMER_ARG] --dir &quot;[UBOLPA_DIR].&quot;" />
     <CustomAction Id="ScheduleUpdates" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
                   DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="check" />
     <!-- load asks for Chrome's permission and waits up to five minutes for the
          click on Allow. A refusal or a missing Chrome does not fail the install:
          load then opens a page with the manual steps. -->
     <SetProperty Id="LoadIntoChrome" Sequence="execute" Before="LoadIntoChrome"
-                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; load" />
+                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; load --dir &quot;[UBOLPA_DIR].&quot; --profiles &quot;[UBOLPA_PROFILES]&quot;" />
     <CustomAction Id="LoadIntoChrome" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
                   DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
     <SetProperty Id="RemoveExtensions" Sequence="execute" Before="RemoveExtensions"
-                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; uninstall" />
+                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; uninstall --dir &quot;[UBOLPA_DIR].&quot;" />
     <CustomAction Id="RemoveExtensions" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
                   DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
 
     <InstallExecuteSequence>
       <Custom Action="StageExtensions" After="InstallFiles" Condition="NOT REMOVE" />
       <Custom Action="ScheduleUpdates" After="StageExtensions" Condition="NOT REMOVE" />
-      <Custom Action="LoadIntoChrome" After="ScheduleUpdates" Condition="NOT REMOVE" />
+      <Custom Action="LoadIntoChrome" After="ScheduleUpdates" Condition="NOT REMOVE AND NOT UBOLPA_SKIP_LOAD" />
       <Custom Action="RemoveExtensions" Before="RemoveFiles"
               Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 
     <UI>
       <ProgressText Action="StageExtensions"
-                    Message="Downloading uBlock Origin and building the toolbar button" />
-      <ProgressText Action="ScheduleUpdates" Message="Scheduling the daily update" />
+                    Message="Building uBlock Origin and its toolbar button" />
+      <ProgressText Action="ScheduleUpdates" Message="Setting up the daily update" />
       <ProgressText Action="LoadIntoChrome"
                     Message="Loading uBlock Origin into Chrome. Chrome asks whether to allow remote debugging: click Allow." />
       <ProgressText Action="RemoveExtensions"
-                    Message="Removing uBlock Origin's folders and the update task" />
+                    Message="Removing uBlock Origin's folder and the daily update" />
     </UI>
 
     <UIRef Id="UboUI" />
