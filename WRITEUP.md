@@ -20,16 +20,24 @@ edits, so a given upstream release and key pair always produce the same result.
 Running `install` again rebuilds a current, consistent installation only after
 a confirmation prompt. `ubo-lpa.py check` verifies the result.
 
-On Linux, an update replaces the extension and companion directories and leaves
-each profile's entries as they are. The install path and the keys stay the
-same, so the IDs and paths in `Preferences` remain valid. Chrome reads an
-unpacked extension's manifest from disk at every start
+An update replaces the extension and companion directories in place and leaves
+the profile entries as they are: those written by the Linux installer, and
+those Load unpacked created on Windows. The install path and the keys stay the
+same, so the IDs and paths in Chrome's preferences remain valid. Chrome reads
+an unpacked extension's manifest from disk at every start
 (`ShouldReloadExtensionManifest()` in `installed_loader.cc`), and it does not
 disable an unpacked extension whose new version asks for more permissions
 (`CheckPermissionsIncrease()` in `chrome_extension_registrar_delegate.cc`).
-Updates therefore run while Chrome is open. Until Chrome restarts, the running
-uBO background page keeps the old code, while pages opened in the meantime,
-such as the popup and the dashboard, load the new files.
+Updates therefore run while Chrome is open, and on Windows the manual steps are
+needed only for the first install. Until Chrome restarts, the running uBO
+background page keeps the old code, while pages opened in the meantime, such as
+the popup and the dashboard, load the new files.
+
+Windows refuses to rename a directory while a file in it is open, and a virus
+scanner checking the new files, or a Chrome read, can hold one open for a
+moment. The installer retries each rename for up to ten seconds. If a rename
+still fails, it moves the previous directories back and exits with status 1,
+and the next run tries again.
 
 The installer edits a profile only when its entries need changing, and only
 while its browser is closed. It decides that from the `SingletonLock` symlink

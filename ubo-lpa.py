@@ -16,13 +16,15 @@ and the two Installer subclasses at the bottom of this file implement it.
     ubo-lpa.py status      recorded version and IDs, the install directory,
                            and which Chrome profiles have the extensions
     ubo-lpa.py uninstall   remove both extensions and undo the profile changes
-    ubo-lpa.py timer       install a systemd user timer that runs install daily
+    ubo-lpa.py timer       run install daily: a systemd user timer on Linux, a
+                           scheduled task on Windows
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import hashlib
 import json
 import os
@@ -34,10 +36,12 @@ import subprocess
 import contextlib
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 GITHUB_REPO = "gorhill/uBlock"
 KNOWN_GOOD = ["1.74.0", "1.73.0", "1.72.0", "1.71.0"]
@@ -58,7 +62,9 @@ ASSETS = Path(__file__).resolve().parent / "assets"
 
 # --- output ---------------------------------------------------------------
 
-_COLOR = sys.stdout.isatty() and not IS_WINDOWS
+# pythonw.exe, which the Windows scheduled task runs, starts without a console,
+# so sys.stdout is None until main() points it at the log file.
+_COLOR = sys.stdout is not None and sys.stdout.isatty() and not IS_WINDOWS
 
 
 def _c(code: str, text: str) -> str:
@@ -84,7 +90,7 @@ def die(msg: str) -> "NoReturn":  # type: ignore[valid-type]
 
 def ask(prompt: str, default_yes: bool) -> bool:
     """Prompt, or take the default silently when there is no TTY (cron, CI)."""
-    if not sys.stdin.isatty():
+    if sys.stdin is None or not sys.stdin.isatty():
         return default_yes
     suffix = "[Y/n]" if default_yes else "[y/N]"
     try:
@@ -808,10 +814,15 @@ class Installer:
         # A running Chrome keeps working through the swap. It reads the
         # extension files from disk as it needs them and the manifest at its
         # next start, so the new version runs fully after a restart.
-        swap_pair([
-            (staging / "extension", self.ext),
-            (staging / "companion", self.comp),
-        ])
+        try:
+            swap_pair([
+                (staging / "extension", self.ext),
+                (staging / "companion", self.comp),
+            ])
+        except OSError as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            die(f"could not replace the installed files ({exc}); "
+                "the previous installation is unchanged")
         shutil.rmtree(staging, ignore_errors=True)
 
     OWNED = (
@@ -822,6 +833,7 @@ class Installer:
         "ubo.pem",
         "comp.pem",
         ".lock",
+        "update.log",
     )
 
     def remove_install_dir(self) -> None:
@@ -865,6 +877,23 @@ class Installer:
             self.root.rmdir()
 
 
+def rename(src: Path, dest: Path) -> None:
+    """
+    Path.rename, retried for up to ten seconds on Windows. Windows refuses to
+    rename a directory while a file in it is open, and a virus scanner checking
+    the new files or a Chrome read can hold one open for a moment.
+    """
+    deadline = time.monotonic() + (10 if IS_WINDOWS else 0)
+    while True:
+        try:
+            src.rename(dest)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.25)
+
+
 def swap_pair(pairs: list[tuple[Path, Path]]) -> None:
     """
     Replace several directories together. Every old copy is kept until all
@@ -878,19 +907,19 @@ def swap_pair(pairs: list[tuple[Path, Path]]) -> None:
             if backup.exists():
                 shutil.rmtree(backup)
             if dest.exists():
-                dest.rename(backup)
+                rename(dest, backup)
             else:
                 backup = None
             # Record dest before moving the new copy into it, so a failure
             # restores this directory as well as those already moved.
             done.append((dest, backup))
-            new_dir.rename(dest)
+            rename(new_dir, dest)
     except OSError:
         for dest, backup in reversed(done):
             if dest.exists():
                 shutil.rmtree(dest, ignore_errors=True)
             if backup is not None and backup.exists():
-                backup.rename(dest)
+                rename(backup, dest)
         raise
     for _, backup in done:
         if backup is not None:
@@ -1204,6 +1233,14 @@ class WindowsInstaller(Installer):
             return 0
         print()
         ok(f"Staged uBlock Origin {version} in {self.root}")
+        # Load unpacked records the folder, and Chrome reads an unpacked
+        # extension's manifest from that folder at every start, so an update
+        # needs the manual steps only until both extensions are loaded.
+        loaded = self.loaded_in(ubo_id, comp_id)
+        if loaded:
+            info(f"Both extensions are loaded in {', '.join(loaded)}; "
+                 f"Chrome loads uBO {version} at its next start.")
+            return 0
         print()
         warn("This installation has to be completed manually:")
         print()
@@ -1215,13 +1252,145 @@ class WindowsInstaller(Installer):
         info("Both extensions persist across browser restarts. See WRITEUP.md for details.")
         return 0
 
+    def loaded_in(self, ubo_id: str, comp_id: str) -> list[str]:
+        """The Chrome profiles that have both extensions loaded from this
+        directory. Chrome keeps extension entries in Secure Preferences on
+        Windows; Preferences is read as well."""
+        found = []
+        want = {ubo_id: self.ext, comp_id: self.comp}
+        for user_data in chrome_user_data_dirs():
+            if not user_data.is_dir():
+                continue
+            profiles = [user_data / "Default", *sorted(user_data.glob("Profile *"))]
+            for profile in profiles:
+                settings: dict = {}
+                for name in ("Preferences", "Secure Preferences"):
+                    try:
+                        prefs = json.loads((profile / name).read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        continue
+                    settings.update(prefs.get("extensions", {}).get("settings", {}))
+                if all(
+                    same_path(str((settings.get(eid) or {}).get("path", "")), path)
+                    for eid, path in want.items()
+                ):
+                    found.append(f"{user_data.parent.name}/{profile.name}")
+        return found
+
+    @property
+    def task_name(self) -> str:
+        """
+        The scheduled task's name. Each install directory gets its own task, so
+        uninstall removes exactly the task that updates it. The default
+        directory's task is plain TIMER_NAME.
+        """
+        if same_path(str(self.root), default_root()):
+            return TIMER_NAME
+        digest = hashlib.sha256(os.path.normcase(str(self.root)).encode()).hexdigest()
+        return f"{TIMER_NAME}-{digest[:8]}"
+
     def remove(self) -> None:
+        # The task goes first, so an uninstall that stops part way does not
+        # leave a task that installs everything again.
+        result = run_quiet(["schtasks", "/Delete", "/TN", self.task_name, "/F"])
+        if result is not None and result.returncode == 0:
+            ok(f"Removed the scheduled task {self.task_name}.")
         self.remove_install_dir()
         ok("Removed staged files.")
         info("Remove both entries from chrome://extensions as well; this script\n   cannot unload them.")
 
     def timer(self) -> None:
-        info("No timer on Windows; re-run install to update.")
+        # pythonw.exe runs without a console window; main() then appends the
+        # output to update.log in the install directory.
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        command = pythonw if pythonw.is_file() else Path(sys.executable)
+        arguments = subprocess.list2cmdline([
+            str(Path(__file__).resolve()), "install", "--non-interactive",
+            "--dir", str(self.root),
+        ])
+        task = TASK_XML.format(
+            description=escape(f"Update uBlock Origin (legacy packaged app) in {self.root}"),
+            command=escape(str(command)),
+            arguments=escape(arguments),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            definition = Path(temporary) / "task.xml"
+            definition.write_text(task, encoding="utf-16")
+            result = run_quiet(["schtasks", "/Create", "/TN", self.task_name,
+                                "/XML", str(definition), "/F"])
+        if result is None:
+            die("schtasks.exe not found; the scheduled task was not created")
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
+            die(f"schtasks /Create failed: {detail}")
+        ok(f"Scheduled task {self.task_name} created (daily)")
+
+
+# Daily at midnight local time with up to an hour's random delay, as the Linux
+# timer. StartWhenAvailable runs a missed update once the user is next logged
+# on. InteractiveToken runs the task as the user who created it, only while
+# they are logged on, so no password is stored.
+TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>{description}</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <RandomDelay>PT1H</RandomDelay>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def chrome_user_data_dirs() -> list[Path]:
+    """Chrome's and Chromium's user data directories on Windows."""
+    local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+    return [
+        local / "Google/Chrome/User Data",
+        local / "Google/Chrome Beta/User Data",
+        local / "Google/Chrome Dev/User Data",
+        local / "Google/Chrome SxS/User Data",
+        local / "Chromium/User Data",
+    ]
+
+
+def same_path(a: str, b: Path) -> bool:
+    return bool(a) and os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(str(b)))
+
+
+def run_quiet(argv: list[str]) -> subprocess.CompletedProcess | None:
+    """Run a command and capture its output, or return None if it is missing."""
+    try:
+        return subprocess.run(argv, capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
 
 
 def systemctl(*args: str) -> subprocess.CompletedProcess | None:
@@ -1309,6 +1478,14 @@ def main(argv: list[str] | None = None) -> int:
     # where a relative one would depend on the browser's working directory.
     root = (args.dir.expanduser().resolve() if args.dir else default_root())
     installer: Installer = (WindowsInstaller if IS_WINDOWS else LinuxInstaller)(root)
+
+    if sys.stdout is None:
+        # Started by pythonw.exe, as the Windows scheduled task does: there is
+        # no console, so append the output to a log in the install directory.
+        root.mkdir(parents=True, exist_ok=True)
+        log = (root / "update.log").open("a", encoding="utf-8")
+        sys.stdout = sys.stderr = log
+        print(f"--- {datetime.datetime.now():%Y-%m-%d %H:%M:%S} {' '.join(sys.argv[1:])}")
 
     if args.command in ("install", "update"):
         return installer.install(quiet=args.non_interactive)

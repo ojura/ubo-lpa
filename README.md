@@ -87,7 +87,7 @@ deletes it.
 | `check` | verify required files, IDs, cross-references and patch markers |
 | `status` | report installed versions, IDs and paths |
 | `uninstall` | remove both extensions and undo the profile changes [listed above](#what-the-installer-changes) |
-| `timer` | install a systemd user timer that runs `install` daily |
+| `timer` | run `install` daily: a systemd user timer on Linux, a scheduled task on Windows |
 
 The timer runs `install` once a day, whether or not Chrome is open. If a
 profile still needs the extensions added, such as a profile created since the
@@ -117,6 +117,21 @@ Then in Chrome:
 3. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\extension`
 4. **Load unpacked**, pick `%LOCALAPPDATA%\uBOLPA\companion`
 
+These steps are needed once. Updates replace both folders in place, Chrome
+keeps the extensions loaded, and it loads the new version at its next start.
+For daily updates, run once:
+
+```powershell
+python ubo-lpa.py timer
+```
+
+This registers a scheduled task, `ubo-lpa-update`, that runs `install` once a
+day with `pythonw.exe`, without a console window. It runs while the user is
+logged on, and a day missed while the PC was off is caught up at the next
+logon. Each run appends its output to `update.log` in the install directory.
+`uninstall` removes the task. With `--dir`, the task name ends in a hash of the
+directory, so each install directory has its own task.
+
 Of the automated routes tested on Windows, only enterprise policy installs an
 off-store extension that Chrome leaves enabled. That route needs administrator
 rights and marks the browser as managed. [WRITEUP.md](WRITEUP.md#windows)
@@ -130,6 +145,7 @@ assets/             the .js and .html files added to uBO and the companion
 linux/ubo-lpa.sh    launcher
 windows/ubo-lpa.ps1 launcher
 tests/e2e/          browser harness, diagnostics tests, AF_UNIX shim for Wine
+tests/windows/      test of the scheduled task and updates on a Windows runner
 WRITEUP.md          technical design, and why Windows needs a manual install
 ```
 
@@ -142,9 +158,16 @@ ordinary web page cannot frame the panel. They upload screenshots and logs even
 when a run fails. The Linux job also checks `uninstall`. The Wine job restarts
 Chrome to check that both extensions are still enabled.
 
-The Windows job installs the current WineHQ development build and loads both
+The Wine job installs the current WineHQ development build and loads both
 directories through **Load unpacked** and Chrome's Win32 folder picker, which is
 the manual route from the Windows instructions above.
+
+A third job runs [tests/windows/run.py](tests/windows/run.py) on a GitHub
+Actions Windows runner. It installs, registers the scheduled task and runs it
+through Task Scheduler, updates the install while Chrome for Testing has both
+extensions loaded, and uninstalls. Chrome for Testing loads the extensions with
+`--load-extension`, which retail Chrome ignores; the update only has to replace
+the files under a Chrome that holds them.
 
 See [tests/e2e/README.md](tests/e2e/README.md) for local commands and safety
 notes.
