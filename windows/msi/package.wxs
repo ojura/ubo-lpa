@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-user MSI for ubo-lpa. It installs the installer itself, with an embedded
+  Python, to %LOCALAPPDATA%\Programs\ubo-lpa, then runs it: install downloads and
+  patches uBO into %LOCALAPPDATA%\uBOLPA, and timer schedules the daily update.
+  build.py assembles payload\ and the images, then calls wix build.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="uBlock Origin for Chrome (ubo-lpa)"
+           Manufacturer="ubo-lpa"
+           Version="$(Version)"
+           UpgradeCode="2C98385C-194E-4E6F-8E99-79513E4F2D63"
+           Scope="perUser"
+           Compressed="yes">
+
+    <!-- The upgrade keeps %LOCALAPPDATA%\uBOLPA and its keys: RemoveExtensions
+         below does not run when a newer version replaces this one. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="art\ubo-lpa.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/ojura/ubo-lpa" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/ojura/ubo-lpa#readme" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <WixVariable Id="WixUIBannerBmp" Value="art\banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="art\dialog.bmp" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="ubo-lpa" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="MenuFolder" Name="uBlock Origin for Chrome" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="Payload" Directory="INSTALLFOLDER">
+      <Files Include="payload\**" />
+    </ComponentGroup>
+
+    <Component Id="MenuShortcuts" Directory="MenuFolder">
+      <Shortcut Id="LoadShortcut" Name="Load uBlock Origin into Chrome"
+                Description="Load both folders into Chrome again, after a click on Allow in Chrome"
+                Target="[INSTALLFOLDER]python\pythonw.exe"
+                Arguments="&quot;[INSTALLFOLDER]ubo-lpa.py&quot; load"
+                WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+      <Shortcut Id="UpdateShortcut" Name="Update uBlock Origin now"
+                Description="Check for a new uBlock Origin release and install it"
+                Target="[INSTALLFOLDER]update-now.cmd" WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon" />
+      <Shortcut Id="LogShortcut" Name="uBlock Origin update log"
+                Description="Output of the daily update"
+                Target="[LocalAppDataFolder]uBOLPA\update.log" />
+      <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
+      <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+      <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\ubo-lpa" Name="shortcuts" Type="integer"
+                     Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="Payload" />
+      <ComponentRef Id="MenuShortcuts" />
+    </Feature>
+
+    <!-- pythonw.exe has no console; ubo-lpa.py then appends its output to
+         %LOCALAPPDATA%\uBOLPA\update.log, which the Start menu links to. -->
+    <SetProperty Id="StageExtensions" Sequence="execute" Before="StageExtensions"
+                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; install --non-interactive" />
+    <CustomAction Id="StageExtensions" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+                  DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="check" />
+    <SetProperty Id="ScheduleUpdates" Sequence="execute" Before="ScheduleUpdates"
+                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; timer" />
+    <CustomAction Id="ScheduleUpdates" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+                  DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="check" />
+    <!-- load asks for Chrome's permission and waits up to five minutes for the
+         click on Allow. A refusal or a missing Chrome does not fail the install:
+         load then opens a page with the manual steps. -->
+    <SetProperty Id="LoadIntoChrome" Sequence="execute" Before="LoadIntoChrome"
+                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; load" />
+    <CustomAction Id="LoadIntoChrome" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+                  DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
+    <SetProperty Id="RemoveExtensions" Sequence="execute" Before="RemoveExtensions"
+                 Value="&quot;[INSTALLFOLDER]python\pythonw.exe&quot; &quot;[INSTALLFOLDER]ubo-lpa.py&quot; uninstall" />
+    <CustomAction Id="RemoveExtensions" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+                  DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="StageExtensions" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="ScheduleUpdates" After="StageExtensions" Condition="NOT REMOVE" />
+      <Custom Action="LoadIntoChrome" After="ScheduleUpdates" Condition="NOT REMOVE" />
+      <Custom Action="RemoveExtensions" Before="RemoveFiles"
+              Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+    <UI>
+      <ProgressText Action="StageExtensions"
+                    Message="Downloading uBlock Origin and building the toolbar button" />
+      <ProgressText Action="ScheduleUpdates" Message="Scheduling the daily update" />
+      <ProgressText Action="LoadIntoChrome"
+                    Message="Loading uBlock Origin into Chrome. Chrome asks whether to allow remote debugging: click Allow." />
+      <ProgressText Action="RemoveExtensions"
+                    Message="Removing uBlock Origin's folders and the update task" />
+    </UI>
+
+    <UIRef Id="UboUI" />
+  </Package>
+</Wix>

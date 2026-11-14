@@ -18,6 +18,8 @@ and the two Installer subclasses at the bottom of this file implement it.
     ubo-lpa.py uninstall   remove both extensions and undo the profile changes
     ubo-lpa.py timer       run install daily: a systemd user timer on Linux, a
                            scheduled task on Windows
+    ubo-lpa.py load        Windows: load both folders into Chrome over its
+                           DevTools connection, after a click on Allow in Chrome
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ import argparse
 import base64
 import datetime
 import hashlib
+import html
 import json
 import os
 import platform
@@ -36,6 +39,7 @@ import subprocess
 import contextlib
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -834,6 +838,7 @@ class Installer:
         "comp.pem",
         ".lock",
         "update.log",
+        "load-by-hand.html",
     )
 
     def remove_install_dir(self) -> None:
@@ -1183,6 +1188,10 @@ class LinuxInstaller(Installer):
             (self.UNIT_DIR / unit).unlink(missing_ok=True)
         systemctl("daemon-reload")
 
+    def load(self, user_data: Path | None = None) -> int:
+        info("On Linux, install adds both extensions to Chrome's profiles itself.")
+        return 0
+
     def timer(self) -> None:
         unit_dir = self.UNIT_DIR
         unit_dir.mkdir(parents=True, exist_ok=True)
@@ -1242,7 +1251,8 @@ class WindowsInstaller(Installer):
                  f"Chrome loads uBO {version} at its next start.")
             return 0
         print()
-        warn("This installation has to be completed manually:")
+        info("ubo-lpa.py load loads both into Chrome after a click on Allow in Chrome.")
+        warn("Or load them by hand:")
         print()
         print("  1. Open  chrome://extensions")
         print("  2. Turn on  Developer mode  (top right)")
@@ -1251,6 +1261,8 @@ class WindowsInstaller(Installer):
         print()
         info("Both extensions persist across browser restarts. See WRITEUP.md for details.")
         return 0
+
+
 
     def loaded_in(self, ubo_id: str, comp_id: str) -> list[str]:
         """The Chrome profiles that have both extensions loaded from this
@@ -1324,6 +1336,135 @@ class WindowsInstaller(Installer):
             detail = (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
             die(f"schtasks /Create failed: {detail}")
         ok(f"Scheduled task {self.task_name} created (daily)")
+
+    def load(self, user_data: Path | None = None) -> int:
+        """
+        Load both folders into Chrome over its DevTools connection. When that
+        fails, open a page with the manual steps and the reason.
+        """
+        try:
+            return self._load(user_data)
+        except SystemExit as exc:
+            if exc.code and user_data is None:
+                guide = self.root / "load-by-hand.html"
+                guide.write_text(GUIDE_HTML.replace("__EXT__", html.escape(str(self.ext)))
+                                 .replace("__COMP__", html.escape(str(self.comp))),
+                                 encoding="utf-8")
+                info(f"The steps for loading both folders by hand: {guide}")
+                try:
+                    os.startfile(str(guide))  # type: ignore[attr-defined]
+                except OSError as error:
+                    warn(f"Could not open it ({error}).")
+            raise
+
+    def _load(self, user_data: Path | None) -> int:
+        state = self.state()
+        ubo_id, comp_id = state.get("ext_id"), state.get("comp_id")
+        if not ubo_id or not comp_id or not self.ext.is_dir() or not self.comp.is_dir():
+            die("Not installed; run install first.")
+        explicit = user_data is not None
+        if not explicit and self.loaded_in(ubo_id, comp_id):
+            ok("Both extensions are already loaded in Chrome.")
+            return 0
+        user_data = user_data or chrome_user_data_dirs()[0]
+        connection = devtools_port(user_data)
+        switched_on = False
+        if connection is None:
+            chrome = chrome_exe()
+            if chrome is None:
+                die("Google Chrome was not found.")
+            flags = [f"--user-data-dir={user_data}"] if explicit else []
+            if chrome_holds(user_data):
+                # Chrome reads the remote debugging setting only when it starts,
+                # writes Local State back when it exits, and ignores chrome://
+                # addresses on its command line, so a running Chrome has to
+                # restart once.
+                if not confirm_restart():
+                    die("Chrome was not restarted, so uBlock Origin was not loaded into it.")
+                close_chrome(user_data)
+                flags.append("--restore-last-session")
+            set_remote_debugging_pref(user_data, True)
+            launch_chrome(chrome, flags)
+            switched_on = True
+            deadline = time.monotonic() + 300
+            while (connection := devtools_port(user_data)) is None:
+                if time.monotonic() > deadline:
+                    die("Chrome did not turn on remote debugging within five minutes.")
+                time.sleep(1)
+        info("Chrome asks whether to allow remote debugging: click Allow.")
+        try:
+            devtools = DevTools(*connection, consent_timeout=300)
+        except (DevToolsRefused, OSError) as exc:
+            if switched_on:
+                warn("Remote debugging stays on in Chrome; it can be turned off at "
+                     "chrome://inspect/#remote-debugging.")
+            die(f"Chrome did not allow the connection ({exc}).")
+        try:
+            self._load_with(devtools, ubo_id, comp_id)
+        finally:
+            if switched_on:
+                switch_off_remote_debugging(devtools, user_data)
+        return 0
+
+    def _load_with(self, devtools: DevTools, ubo_id: str, comp_id: str) -> None:
+        _, session = devtools.page("chrome://extensions/")
+        for _ in range(150):
+            try:
+                if devtools.evaluate(session, "typeof chrome.developerPrivate") == "object":
+                    break
+            except RuntimeError:
+                pass
+            time.sleep(0.2)
+        # The companion is an unpacked MV3 extension, which Chrome only runs
+        # with developer mode on.
+        devtools.evaluate(session, "chrome.developerPrivate.updateProfileConfiguration("
+                                   "{inDeveloperMode: true})")
+
+        def entry(ext_id: str) -> dict:
+            return next((e for e in devtools.evaluate(session, EXTENSIONS_INFO)
+                         if e["id"] == ext_id), {})
+
+        for ext_id, folder, label in ((ubo_id, self.ext, "uBlock Origin"),
+                                      (comp_id, self.comp, "the toolbar button")):
+            current = entry(ext_id)
+            if current.get("location") != "UNPACKED":
+                info(f"Loading {label} from {folder}")
+                picker: dict = {}
+                filler = threading.Thread(target=fill_folder_picker, args=(folder, picker),
+                                          daemon=True)
+                filler.start()
+                error = devtools.evaluate(session, (
+                    "chrome.developerPrivate.loadUnpacked({failQuietly: false, populateError: true})"
+                    ".then(e => e ? (e.error || JSON.stringify(e)) : null, e => e.message)"))
+                filler.join(5)
+                if picker.get("error") or error:
+                    die(f"Chrome did not load {folder}: {picker.get('error') or error}")
+                current = entry(ext_id)
+            if current.get("location") != "UNPACKED":
+                die(f"Chrome did not load {folder}")
+            ok(f"{label} is loaded in Chrome")
+        devtools.evaluate(session, "chrome.developerPrivate.updateExtensionConfiguration("
+                                   f"{{extensionId: '{comp_id}', pinnedToToolbar: true}})")
+
+        def enabled(ext_id: str, seconds: float) -> dict:
+            # Chrome lists an extension as disabled, with the reason
+            # "reloading", while it loads it again, so wait for it to settle.
+            deadline = time.monotonic() + seconds
+            while True:
+                current = entry(ext_id)
+                if current.get("state") == "ENABLED" or time.monotonic() > deadline:
+                    return current
+                time.sleep(0.5)
+
+        for ext_id in (ubo_id, comp_id):
+            current = enabled(ext_id, 30)
+            if current.get("state") != "ENABLED":
+                devtools.evaluate(session, f"chrome.management.setEnabled('{ext_id}', true)")
+                current = enabled(ext_id, 15)
+            if current.get("state") != "ENABLED":
+                die(f"Chrome lists {ext_id} as {current.get('state')}, "
+                    f"for {', '.join(current.get('reasons') or ['no reason given'])}")
+        ok("uBlock Origin is running in Chrome, with its button pinned to the toolbar.")
 
 
 # Daily at midnight local time with up to an hour's random delay, as the Linux
@@ -1445,6 +1586,369 @@ def entry_state(entry: dict | None, ext_dir: Path) -> str:
     return "enabled"
 
 
+# --- loading into Chrome (Windows) -----------------------------------------
+#
+# Chrome on Windows accepts an off-store extension only through Load unpacked
+# (WRITEUP.md, "Windows"). load performs those steps over Chrome's DevTools
+# connection, so the user's one step is to allow that connection in Chrome's
+# prompt. Extensions.loadUnpacked over DevTools would skip the folder picker,
+# but Chrome forgets extensions loaded that way at its next start, so load uses
+# the extensions page's own Load unpacked and fills in the picker it opens.
+
+
+class DevToolsRefused(Exception):
+    pass
+
+
+class DevTools:
+    """The parts of a DevTools WebSocket client that load needs."""
+
+    def __init__(self, port: int, path: str, consent_timeout: float) -> None:
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall(
+            f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode()
+        )
+        # Chrome answers the upgrade once the user has decided in its "Allow
+        # remote debugging?" prompt, with 101 for Allow and 403 for Cancel.
+        self.sock.settimeout(consent_timeout)
+        self.buffer = b""
+        status = self._until(b"\r\n\r\n").split(b"\r\n")[0].decode(errors="replace")
+        if " 101 " not in status:
+            raise DevToolsRefused(status)
+        self.sock.settimeout(120)
+        self.next_id = 0
+
+    def _until(self, marker: bytes) -> bytes:
+        while marker not in self.buffer:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise DevToolsRefused("Chrome closed the connection")
+            self.buffer += chunk
+        head, _, self.buffer = self.buffer.partition(marker)
+        return head
+
+    def _exact(self, count: int) -> bytes:
+        while len(self.buffer) < count:
+            chunk = self.sock.recv(max(65536, count - len(self.buffer)))
+            if not chunk:
+                raise OSError("Chrome closed the DevTools connection")
+            self.buffer += chunk
+        out, self.buffer = self.buffer[:count], self.buffer[count:]
+        return out
+
+    def _send(self, text: str) -> None:
+        payload, mask = text.encode(), os.urandom(4)
+        length = len(payload)
+        if length < 126:
+            header = bytes([0x81, 0x80 | length])
+        elif length < 1 << 16:
+            header = bytes([0x81, 0x80 | 126]) + length.to_bytes(2, "big")
+        else:
+            header = bytes([0x81, 0x80 | 127]) + length.to_bytes(8, "big")
+        self.sock.sendall(header + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+    def _receive(self) -> dict:
+        chunks = []
+        while True:
+            first, second = self._exact(2)
+            length = second & 0x7F
+            if length == 126:
+                length = int.from_bytes(self._exact(2), "big")
+            elif length == 127:
+                length = int.from_bytes(self._exact(8), "big")
+            payload = self._exact(length)
+            opcode = first & 0x0F
+            if opcode == 0x9:  # ping
+                self.sock.sendall(bytes([0x8A, 0x80]) + os.urandom(4))
+            elif opcode == 0x8:
+                raise OSError("Chrome closed the DevTools connection")
+            else:
+                chunks.append(payload)
+                if first & 0x80:
+                    return json.loads(b"".join(chunks))
+
+    def call(self, method: str, params: dict | None = None, session: str | None = None) -> dict:
+        self.next_id += 1
+        message: dict = {"id": self.next_id, "method": method, "params": params or {}}
+        if session:
+            message["sessionId"] = session
+        self._send(json.dumps(message))
+        while True:
+            reply = self._receive()
+            if reply.get("id") == self.next_id:
+                if "error" in reply:
+                    raise RuntimeError(f"{method}: {reply['error'].get('message')}")
+                return reply.get("result", {})
+
+    def evaluate(self, session: str, expression: str):
+        result = self.call("Runtime.evaluate", {
+            "expression": expression, "awaitPromise": True, "returnByValue": True,
+            "userGesture": True,
+        }, session)
+        if "exceptionDetails" in result:
+            detail = result["exceptionDetails"]
+            raise RuntimeError((detail.get("exception") or {}).get("description") or detail.get("text"))
+        return result.get("result", {}).get("value")
+
+    def page(self, url: str) -> tuple[str, str]:
+        """Open url in a new tab; return its target ID and an attached session."""
+        target = self.call("Target.createTarget", {"url": url})["targetId"]
+        session = self.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+        return target, session
+
+
+EXTENSIONS_INFO = """chrome.developerPrivate.getExtensionsInfo({includeDisabled: true})
+  .then(list => list.map(e => ({id: e.id, state: e.state, location: e.location,
+                                path: e.prettifiedPath || "", pinned: e.pinnedToToolbar,
+                                reasons: Object.keys(e.disableReasons || {})
+                                               .filter(k => e.disableReasons[k])})))"""
+
+
+def confirm_restart() -> bool:
+    """Ask before restarting Chrome: in the console, or in a message box when
+    there is none, as when Setup runs this."""
+    text = ("To load uBlock Origin, Chrome restarts once and reopens its tabs. "
+            "Chrome then asks whether to allow remote debugging: click Allow.")
+    if sys.stdin is not None and sys.stdin.isatty():
+        return ask(text + " Restart Chrome now?", True)
+    import ctypes
+    MB_OKCANCEL, MB_ICONINFORMATION, MB_TOPMOST, MB_SETFOREGROUND, IDOK = 1, 0x40, 0x40000, 0x10000, 1
+    return ctypes.windll.user32.MessageBoxW(
+        None, text, "uBlock Origin for Chrome",
+        MB_OKCANCEL | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND) == IDOK
+
+
+def close_chrome(user_data: Path) -> None:
+    """Close Chrome as its window's close button does, so it saves its session;
+    force it only if it keeps running, as it does with background apps."""
+    subprocess.run(["taskkill", "/im", "chrome.exe"], capture_output=True)
+    for force in (False, True):
+        deadline = time.monotonic() + (15 if force else 30)
+        while time.monotonic() < deadline:
+            if not chrome_holds(user_data):
+                return
+            time.sleep(0.5)
+        subprocess.run(["taskkill", "/f", "/im", "chrome.exe"], capture_output=True)
+    die("Chrome did not close.")
+
+
+def launch_chrome(chrome: str, flags: list[str]) -> None:
+    """Start Chrome so that it outlives this process."""
+    detached = 0x00000008 | 0x00000200  # DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP
+    for breakaway in (0x01000000, 0):  # CREATE_BREAKAWAY_FROM_JOB, if the job allows it
+        try:
+            subprocess.Popen([chrome, *flags], creationflags=detached | breakaway,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, close_fds=True)
+            return
+        except OSError:
+            if not breakaway:
+                raise
+
+
+def switch_off_remote_debugging(devtools: DevTools, user_data: Path) -> None:
+    """Turn remote debugging off again from chrome://inspect, the way its
+    checkbox does. Chrome then stops listening and closes this connection,
+    usually before it answers the call that asked for it."""
+    try:
+        _, session = devtools.page("chrome://inspect/#remote-debugging")
+        for _ in range(50):
+            if devtools.evaluate(session, "typeof chrome.send") == "function":
+                break
+            time.sleep(0.2)
+        devtools.evaluate(session, "chrome.send('set-remote-debugging-enabled', [false]); "
+                                   "setTimeout(() => window.close(), 300); true")
+    except OSError:
+        pass
+    except RuntimeError as exc:
+        warn(f"Could not turn remote debugging off ({exc}); it can be turned off at "
+             "chrome://inspect/#remote-debugging.")
+        return
+    deadline = time.monotonic() + 10
+    while devtools_port(user_data) is not None:
+        if time.monotonic() > deadline:
+            warn("Remote debugging is still on; it can be turned off at "
+                 "chrome://inspect/#remote-debugging.")
+            return
+        time.sleep(0.5)
+    ok("Turned remote debugging off again.")
+
+
+GUIDE_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Load uBlock Origin in Chrome</title>
+<style>
+  body { margin: 0; font: 15px/1.5 "Segoe UI", system-ui, sans-serif; color: #1f2328; background: #f6f8fa; }
+  header { background: linear-gradient(135deg, #a3241a, #5e0f0a); color: #fff; padding: 26px 40px; }
+  header h1 { margin: 0; font-size: 23px; font-weight: 600; }
+  header p { margin: 6px 0 0; opacity: .9; }
+  main { max-width: 760px; margin: 26px auto; padding: 0 24px; }
+  ol { list-style: none; counter-reset: s; padding: 0; margin: 0; }
+  li { counter-increment: s; position: relative; background: #fff; border: 1px solid #d8dee4;
+       border-radius: 10px; padding: 15px 18px 15px 62px; margin-bottom: 11px; }
+  li::before { content: counter(s); position: absolute; left: 18px; top: 14px; width: 30px; height: 30px;
+               border-radius: 50%; background: #8c1c13; color: #fff; font-weight: 600;
+               text-align: center; line-height: 30px; }
+  .copy { display: flex; gap: 8px; margin-top: 8px; }
+  code { flex: 1; font: 13px/1.4 Consolas, monospace; background: #f6f8fa; border: 1px solid #d8dee4;
+         border-radius: 6px; padding: 7px 10px; overflow-wrap: anywhere; }
+  button { font: inherit; font-size: 13px; border: 1px solid #8c1c13; color: #8c1c13; background: #fff;
+           border-radius: 6px; padding: 0 14px; cursor: pointer; }
+</style></head>
+<body>
+<header><h1>Load uBlock Origin in Chrome</h1>
+<p>Setup could not load uBlock Origin into Chrome itself. These steps do it by hand, once;
+   the update log in the same folder says what went wrong.</p></header>
+<main><ol>
+  <li>Open the extensions page: paste this into Chrome's address bar.
+    <div class="copy"><code>chrome://extensions</code><button>Copy</button></div></li>
+  <li>Turn on <b>Developer mode</b>, top right.</li>
+  <li>Click <b>Load unpacked</b> and select this folder.
+    <div class="copy"><code>__EXT__</code><button>Copy</button></div></li>
+  <li>Click <b>Load unpacked</b> again and select the toolbar button's folder.
+    <div class="copy"><code>__COMP__</code><button>Copy</button></div></li>
+  <li>Pin <b>uBlock Origin toolbar button</b> from the puzzle-piece menu next to the address bar.</li>
+</ol></main>
+<script>
+for (const b of document.querySelectorAll(".copy button"))
+  b.onclick = () => navigator.clipboard.writeText(b.previousElementSibling.textContent)
+    .then(() => { b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1500); });
+</script>
+</body></html>
+"""
+
+
+def chrome_exe() -> str | None:
+    """Google Chrome's chrome.exe, from App Paths or its usual folders."""
+    import winreg
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe") as key:
+                value = winreg.QueryValue(key, None)
+            if value and Path(value).is_file():
+                return value
+        except OSError:
+            pass
+    for base in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        candidate = Path(os.environ.get(base, "")) / "Google/Chrome/Application/chrome.exe"
+        if os.environ.get(base) and candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def chrome_holds(user_data: Path) -> bool:
+    """True if a Chrome process has this user data directory open: it holds
+    the directory's lockfile open without sharing it."""
+    try:
+        with (user_data / "lockfile").open("a"):
+            return False
+    except FileNotFoundError:
+        return False
+    except PermissionError:
+        return True
+
+
+def devtools_port(user_data: Path) -> tuple[int, str] | None:
+    """The port and browser path from DevToolsActivePort, if Chrome listens there."""
+    try:
+        lines = (user_data / "DevToolsActivePort").read_text().split()
+        port = int(lines[0])
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            return port, lines[1]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def set_remote_debugging_pref(user_data: Path, enabled: bool) -> None:
+    """Chrome's "Allow remote debugging for this browser instance" setting, in
+    Local State. Only for a Chrome that is not running: a running one writes
+    its own copy back on exit."""
+    path = user_data / "Local State"
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    user_data.mkdir(parents=True, exist_ok=True)
+    data.setdefault("devtools", {}).setdefault("remote_debugging", {})["user-enabled"] = enabled
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def fill_folder_picker(folder: Path, result: dict, timeout: float = 60) -> None:
+    """
+    Wait for Chrome's folder picker, type folder into it and accept it. The
+    picker is a Win32 common dialog: its file name box is control 0x480 in
+    Wine's dialog and an Edit inside the ComboBoxEx32 0x47C in Windows' own.
+    """
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [callback, wintypes.LPARAM]
+    user32.GetDlgItem.restype = wintypes.HWND
+    user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.FindWindowExW.restype = wintypes.HWND
+    user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPCWSTR]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    WM_SETTEXT, WM_COMMAND, IDOK = 0x000C, 0x0111, 1
+
+    def from_chrome(hwnd) -> bool:
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        process = kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+        if not process:
+            return False
+        name = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(1024)
+        found = kernel32.QueryFullProcessImageNameW(process, 0, name, ctypes.byref(size))
+        kernel32.CloseHandle(process)
+        return bool(found) and name.value.lower().endswith("chrome.exe")
+
+    def picker() -> tuple | None:
+        found = []
+
+        @callback
+        def visit(hwnd, _):
+            if user32.IsWindowVisible(hwnd) and user32.GetDlgItem(hwnd, IDOK):
+                edit = user32.GetDlgItem(hwnd, 0x480)
+                if not edit:
+                    combo = user32.GetDlgItem(hwnd, 0x47C)
+                    inner = user32.FindWindowExW(combo, None, "ComboBox", None) if combo else None
+                    edit = user32.FindWindowExW(inner, None, "Edit", None) if inner else None
+                if edit and from_chrome(hwnd):
+                    found.append((hwnd, edit))
+            return True
+
+        user32.EnumWindows(visit, 0)
+        return found[0] if found else None
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        dialog = picker()
+        if dialog:
+            hwnd, edit = dialog
+            user32.SendMessageW(edit, WM_SETTEXT, 0, str(folder))
+            user32.PostMessageW(hwnd, WM_COMMAND, IDOK, 0)
+            # A typed folder can make the dialog open it instead of returning
+            # it; accepting again then returns the folder now shown.
+            for _ in range(40):
+                time.sleep(0.25)
+                if not user32.IsWindow(hwnd):
+                    result["ok"] = True
+                    return
+            user32.PostMessageW(hwnd, WM_COMMAND, IDOK, 0)
+            result["ok"] = True
+            return
+        time.sleep(0.2)
+    result["error"] = "Chrome's folder dialog did not appear"
+
+
 def default_root() -> Path:
     if IS_WINDOWS:
         base = os.environ.get("LOCALAPPDATA") or str(Path.home())
@@ -1461,7 +1965,7 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         nargs="?",
         default="install",
-        choices=["install", "update", "check", "status", "uninstall", "timer"],
+        choices=["install", "update", "check", "status", "uninstall", "timer", "load"],
     )
     parser.add_argument(
         "--non-interactive",
@@ -1472,6 +1976,8 @@ def main(argv: list[str] | None = None) -> int:
         help="never prompt; take the default answer (used by the timer)",
     )
     parser.add_argument("--dir", type=Path, default=None, help="install directory")
+    # Tests point load at a Chrome started with its own user data directory.
+    parser.add_argument("--user-data-dir", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     # Resolved because the path is written verbatim into Chrome's Preferences,
@@ -1480,10 +1986,17 @@ def main(argv: list[str] | None = None) -> int:
     installer: Installer = (WindowsInstaller if IS_WINDOWS else LinuxInstaller)(root)
 
     if sys.stdout is None:
-        # Started by pythonw.exe, as the Windows scheduled task does: there is
-        # no console, so append the output to a log in the install directory.
-        root.mkdir(parents=True, exist_ok=True)
-        log = (root / "update.log").open("a", encoding="utf-8")
+        # Started by pythonw.exe, as the Windows scheduled task and the MSI
+        # do: there is no console, so append the output to a log in the
+        # install directory. uninstall deletes that directory, and Windows
+        # cannot delete a file this process holds open, so it logs to the
+        # temporary directory.
+        if args.command == "uninstall":
+            log_path = Path(tempfile.gettempdir()) / "ubo-lpa-uninstall.log"
+        else:
+            root.mkdir(parents=True, exist_ok=True)
+            log_path = root / "update.log"
+        log = log_path.open("a", encoding="utf-8")
         sys.stdout = sys.stderr = log
         print(f"--- {datetime.datetime.now():%Y-%m-%d %H:%M:%S} {' '.join(sys.argv[1:])}")
 
@@ -1497,6 +2010,8 @@ def main(argv: list[str] | None = None) -> int:
         with Installer.lock():
             installer.timer()
         return 0
+    if args.command == "load":
+        return installer.load(args.user_data_dir)
 
     state = installer.state()
     if not state.get("ext_id") or not state.get("comp_id"):
