@@ -118,10 +118,11 @@
       </Dialog>
 
       <!-- The folder, and a full installation (with the maintenance tool and
-           update checks) or a portable one. In maintenance the kind of
-           installation is fixed, so the radio buttons are hidden and a second
-           checkbox and dropdown take their place. Only buttons and checkboxes
-           can publish events, so Next sets UBOLPA_MAINTENANCE from the choice. -->
+           update checks) or a portable one. In maintenance the installation is
+           a full one and cannot change kind, so the radio buttons show it,
+           disabled. Radio buttons cannot publish control events, so Next sets
+           UBOLPA_MAINTENANCE from the choice. The CheckBox and ComboBox tables
+           are keyed by property, so each property has one control here. -->
       <Dialog Id="UboOptionsDlg" Width="370" Height="270" Title="!(loc.UboDlgTitle)">
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
@@ -135,17 +136,17 @@
         </Control>
         <Control Id="FolderFixed" Type="Text" X="20" Y="69" Width="330" Height="13" NoPrefix="yes" HideCondition="NOT Installed" ShowCondition="Installed" Text="[UBOLPA_DIR]" />
 
-        <Control Id="Kind" Type="RadioButtonGroup" X="20" Y="94" Width="330" Height="80" Property="UBOLPA_KIND" HideCondition="Installed">
+        <Control Id="Kind" Type="RadioButtonGroup" X="20" Y="94" Width="330" Height="80" Property="UBOLPA_KIND" DisableCondition="Installed" EnableCondition="NOT Installed">
           <RadioButtonGroup Property="UBOLPA_KIND">
             <RadioButton Value="full" X="0" Y="0" Width="330" Height="14" Text="!(loc.UboOptionsFull)" />
             <RadioButton Value="portable" X="0" Y="66" Width="330" Height="14" Text="!(loc.UboOptionsPortableChoice)" />
           </RadioButtonGroup>
         </Control>
-        <Control Id="FullText" Type="Text" X="34" Y="109" Width="316" Height="22" NoPrefix="yes" HideCondition="Installed" Text="!(loc.UboOptionsFullText)" />
+        <Control Id="FullText" Type="Text" X="34" Y="109" Width="316" Height="22" NoPrefix="yes" Text="!(loc.UboOptionsFullText)" />
         <Control Id="Updates" Type="CheckBox" X="34" Y="134" Width="212" Height="15" Property="AUTOUPDATE" CheckBoxValue="1" Text="!(loc.UboOptionsUpdates)"
-                 HideCondition="Installed" DisableCondition="UBOLPA_KIND=&quot;portable&quot;" EnableCondition="UBOLPA_KIND&lt;&gt;&quot;portable&quot;" />
+                 DisableCondition="UBOLPA_KIND=&quot;portable&quot;" EnableCondition="UBOLPA_KIND&lt;&gt;&quot;portable&quot;" />
         <Control Id="Interval" Type="ComboBox" X="250" Y="133" Width="86" Height="16" Property="UBOLPA_INTERVAL" ComboList="yes"
-                 HideCondition="Installed" DisableCondition="UBOLPA_KIND=&quot;portable&quot; OR NOT AUTOUPDATE" EnableCondition="UBOLPA_KIND&lt;&gt;&quot;portable&quot; AND AUTOUPDATE">
+                 DisableCondition="UBOLPA_KIND=&quot;portable&quot; OR NOT AUTOUPDATE" EnableCondition="UBOLPA_KIND&lt;&gt;&quot;portable&quot; AND AUTOUPDATE">
           <ComboBox Property="UBOLPA_INTERVAL">
             <ListItem Value="daily" Text="!(loc.UboIntervalDaily)" />
             <ListItem Value="weekly" Text="!(loc.UboIntervalWeekly)" />
@@ -153,15 +154,7 @@
             <ListItem Value="monthly" Text="!(loc.UboIntervalMonthly)" />
           </ComboBox>
         </Control>
-        <Control Id="PortableText" Type="Text" X="34" Y="175" Width="316" Height="40" NoPrefix="yes" HideCondition="Installed" Text="!(loc.UboOptionsPortable)" />
-
-        <!-- Shown in maintenance. It and IntervalFixed share the CheckBox and
-             ComboBox table rows of Updates and Interval, which are keyed by
-             property, so they declare neither CheckBoxValue nor list items. -->
-        <Control Id="UpdatesFixed" Type="CheckBox" X="20" Y="94" Width="212" Height="15" Property="AUTOUPDATE" Text="!(loc.UboOptionsUpdates)"
-                 HideCondition="NOT Installed" ShowCondition="Installed" />
-        <Control Id="IntervalFixed" Type="ComboBox" X="236" Y="93" Width="86" Height="16" Property="UBOLPA_INTERVAL" ComboList="yes"
-                 HideCondition="NOT Installed" ShowCondition="Installed" DisableCondition="NOT AUTOUPDATE" EnableCondition="AUTOUPDATE" />
+        <Control Id="PortableText" Type="Text" X="34" Y="175" Width="316" Height="40" NoPrefix="yes" Text="!(loc.UboOptionsPortable)" />
 
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">

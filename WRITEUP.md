@@ -799,7 +799,9 @@ its release notes; the profiles, as checkboxes; the folder, which defaults to
 with a checkbox for update checks and a dropdown for their interval. Radio
 buttons cannot publish control events in Windows Installer, so the page's Next
 button sets `UBOLPA_MAINTENANCE` from the choice, and the update checkbox and
-dropdown under the unselected full installation are disabled, not unticked.
+dropdown under the unselected full installation are disabled, not unticked. In
+maintenance the radio buttons are shown disabled, with the full installation
+selected, because an installed ubo-lpa cannot change kind.
 
 With the full installation, Windows Installer installs the program to
 `%LOCALAPPDATA%\Programs\ubo-lpa` and runs `install`, `timer` and `load` from it.
