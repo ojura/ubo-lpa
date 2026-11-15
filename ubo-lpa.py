@@ -2712,8 +2712,9 @@ GUIDE_HTML = """<!doctype html>
 </ol>
 <figure><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/load-by-hand.png"
   alt="Chrome's extensions page with Developer mode on, the Load unpacked button, and both extensions">
-<figcaption>Chrome's extensions page after steps 1 to 4: Developer mode is on, Load unpacked is next to
-  it, and both extensions are listed.</figcaption></figure>
+<figcaption>Chrome's extensions page after steps 1 to 4: Developer mode is on at the top right, Load
+  unpacked is at the top left, the toolbar button is under All Extensions, and uBlock Origin is under
+  Chrome Apps.</figcaption></figure>
 </main>
 <script>
 for (const b of document.querySelectorAll(".copy button"))

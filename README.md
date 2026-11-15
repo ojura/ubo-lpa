@@ -258,7 +258,7 @@ well, and is needed only once:
    scripts**, so uBO's scriptlets run before the page's own scripts
 
 <p align="center"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/load-by-hand.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/load-by-hand.png" width="640" alt="Chrome's extensions page with Developer mode on, the Load unpacked button, and both extensions"></a>
-<br><sub>Chrome's extensions page after steps 1 to 4</sub></p>
+<br><sub>Chrome's extensions page after steps 1 to 4: uBlock Origin is listed under Chrome Apps</sub></p>
 
 If Chrome's prompt is declined after `load` turned remote debugging on, `load`
 asks what to do next: show the steps above, which then end with turning remote
