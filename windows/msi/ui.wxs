@@ -142,10 +142,10 @@
             <RadioButton Value="portable" X="0" Y="66" Width="330" Height="14" Text="!(loc.UboOptionsPortableChoice)" />
           </RadioButtonGroup>
         </Control>
-        <Control Id="FullText" Type="Text" X="34" Y="109" Width="316" Height="22" NoPrefix="yes" Text="!(loc.UboOptionsFullText)" />
-        <Control Id="Updates" Type="CheckBox" X="34" Y="134" Width="212" Height="15" Property="AUTOUPDATE" CheckBoxValue="1" Text="!(loc.UboOptionsUpdates)"
+        <Control Id="FullText" Type="Text" X="34" Y="109" Width="316" Height="26" NoPrefix="yes" Text="!(loc.UboOptionsFullText)" />
+        <Control Id="Updates" Type="CheckBox" X="34" Y="138" Width="212" Height="15" Property="AUTOUPDATE" CheckBoxValue="1" Text="!(loc.UboOptionsUpdates)"
                  DisableCondition="UBOLPA_KIND=&quot;portable&quot;" EnableCondition="UBOLPA_KIND&lt;&gt;&quot;portable&quot;" />
-        <Control Id="Interval" Type="ComboBox" X="250" Y="133" Width="86" Height="16" Property="UBOLPA_INTERVAL" ComboList="yes"
+        <Control Id="Interval" Type="ComboBox" X="250" Y="137" Width="86" Height="16" Property="UBOLPA_INTERVAL" ComboList="yes"
                  DisableCondition="UBOLPA_KIND=&quot;portable&quot; OR NOT AUTOUPDATE" EnableCondition="UBOLPA_KIND&lt;&gt;&quot;portable&quot; AND AUTOUPDATE">
           <ComboBox Property="UBOLPA_INTERVAL">
             <ListItem Value="daily" Text="!(loc.UboIntervalDaily)" />

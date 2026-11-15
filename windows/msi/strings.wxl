@@ -26,14 +26,14 @@
   <String Id="UboOptionsFolder" Value="Folder that Chrome loads uBlock Origin and its toolbar button from:" />
   <String Id="UboOptionsChange" Value="C&amp;hange..." />
   <String Id="UboOptionsFull" Value="&amp;Full installation" />
-  <String Id="UboOptionsFullText" Value="Installs the maintenance tool, which updates uBlock Origin and can change or remove ubo-lpa from the Start menu." />
+  <String Id="UboOptionsFullText" Value="Installs the maintenance tool, which updates uBlock Origin and changes or removes ubo-lpa from the Start menu." />
   <String Id="UboOptionsUpdates" Value="&amp;Check for and install uBlock Origin updates" />
   <String Id="UboIntervalDaily" Value="Daily" />
   <String Id="UboIntervalWeekly" Value="Weekly" />
   <String Id="UboIntervalBiweekly" Value="Every 2 weeks" />
   <String Id="UboIntervalMonthly" Value="Monthly" />
   <String Id="UboOptionsPortableChoice" Value="&amp;Portable" />
-  <String Id="UboOptionsPortable" Value="Installs the chosen uBlock Origin release into Chrome and leaves only the folder above, with no updates, Start menu entries or entry in the list of installed apps. Running Setup again with the same folder updates it." />
+  <String Id="UboOptionsPortable" Value="Installs the chosen release into Chrome and leaves nothing but the folder above. uBlock Origin is not updated automatically; running Setup again with the same folder updates it." />
 
   <String Id="UboMaintenanceTitle" Value="{\WixUI_Font_Title}Maintain ubo-lpa" />
   <String Id="UboMaintenanceDescription" Value="uBlock Origin [UBOLPA_INSTALLED_VERSION] is installed." />
