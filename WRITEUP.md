@@ -728,7 +728,11 @@ when it starts and writes back when it exits. `load` therefore:
    Chrome instead: Chrome ignores `chrome://` addresses on its command line,
    both at start and when handed to a running instance.
 3. Waits for the user's click on Allow: Chrome answers the WebSocket upgrade
-   with 101 for Allow and 403 for Cancel.
+   with 101 for Allow and 403 for Cancel. Meanwhile it raises Chrome's windows
+   above the others every half second, for six seconds at most, by making each
+   one topmost and then not topmost again. Only the foreground process may
+   bring a window to the front with `SetForegroundWindow`, and Setup's window
+   is in front, so the prompt would otherwise open behind it.
 
 On the connection, `load` opens `chrome://extensions` and calls the page's own
 `chrome.developerPrivate` API: `updateProfileConfiguration({inDeveloperMode:

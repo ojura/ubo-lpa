@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime
+import functools
 import hashlib
 import html
 import inspect
@@ -2374,7 +2375,13 @@ class DevTools:
         # remote debugging?" prompt, with 101 for Allow and 403 for Cancel.
         self.sock.settimeout(consent_timeout)
         self.buffer = b""
-        status = self._until(b"\r\n\r\n").split(b"\r\n")[0].decode(errors="replace")
+        answered = threading.Event()
+        if IS_WINDOWS:
+            threading.Thread(target=keep_chrome_in_front, args=(answered,), daemon=True).start()
+        try:
+            status = self._until(b"\r\n\r\n").split(b"\r\n")[0].decode(errors="replace")
+        finally:
+            answered.set()
         if " 101 " not in status:
             raise DevToolsRefused(status)
         self.sock.settimeout(120)
@@ -2674,16 +2681,19 @@ def set_remote_debugging_pref(user_data: Path, enabled: bool) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
-def fill_folder_picker(folder: Path, result: dict, timeout: float = 60) -> None:
+@functools.lru_cache(maxsize=None)
+def win32():
     """
-    Wait for Chrome's folder picker, type folder into it and accept it. The
-    picker is a Win32 common dialog: its file name box is control 0x480 in
-    Wine's dialog and an Edit inside the ComboBoxEx32 0x47C in Windows' own.
+    user32 and kernel32 with the signatures load uses, and the EnumWindows
+    callback type. Cached: the window searches call it for every window.
     """
     import ctypes
     from ctypes import wintypes
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
     callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     user32.EnumWindows.argtypes = [callback, wintypes.LPARAM]
     user32.GetDlgItem.restype = wintypes.HWND
@@ -2695,22 +2705,80 @@ def fill_folder_picker(folder: Path, result: dict, timeout: float = 60) -> None:
     user32.IsWindow.argtypes = [wintypes.HWND]
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
     user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.QueryFullProcessImageNameW.argtypes = [
-        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
-    WM_SETTEXT, WM_COMMAND, IDOK = 0x000C, 0x0111, 1
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    return user32, kernel32, callback
 
-    def from_chrome(hwnd) -> bool:
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        process = kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
-        if not process:
-            return False
-        name = ctypes.create_unicode_buffer(1024)
-        size = wintypes.DWORD(1024)
-        found = kernel32.QueryFullProcessImageNameW(process, 0, name, ctypes.byref(size))
-        kernel32.CloseHandle(process)
-        return bool(found) and name.value.lower().endswith("chrome.exe")
+
+def from_chrome(hwnd) -> bool:
+    """True if the window belongs to a chrome.exe process."""
+    import ctypes
+    from ctypes import wintypes
+    user32, kernel32, _ = win32()
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    process = kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+    if not process:
+        return False
+    name = ctypes.create_unicode_buffer(1024)
+    size = wintypes.DWORD(1024)
+    found = kernel32.QueryFullProcessImageNameW(process, 0, name, ctypes.byref(size))
+    kernel32.CloseHandle(process)
+    return bool(found) and name.value.lower().endswith("chrome.exe")
+
+
+def raise_chrome_windows() -> None:
+    """
+    Move Chrome's visible windows above all other normal windows, without
+    activating them. Only the foreground process may bring a window to the
+    front with SetForegroundWindow, and Setup's window is in front while
+    load runs, so Chrome's "Allow remote debugging?" prompt would open behind
+    it. Making a window topmost and then not topmost again moves it to the
+    top of the normal windows and does not need the foreground.
+    """
+    user32, _, callback = win32()
+    HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
+    SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+    flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+    windows = []
+
+    @callback
+    def visit(hwnd, _):
+        if user32.IsWindowVisible(hwnd) and from_chrome(hwnd):
+            windows.append(hwnd)
+        return True
+
+    user32.EnumWindows(visit, 0)
+    # EnumWindows lists windows from the top down. Raising the lowest first
+    # keeps Chrome's own windows in their order.
+    for hwnd in reversed(windows):
+        user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+        user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+
+
+def keep_chrome_in_front(answered: threading.Event, seconds: float = 6) -> None:
+    """
+    Raise Chrome's windows every half second until the user answers the
+    prompt, for at most seconds. The prompt appears a moment after the
+    connection request, and Chrome may still be starting.
+    """
+    deadline = time.monotonic() + seconds
+    while not answered.is_set() and time.monotonic() < deadline:
+        try:
+            raise_chrome_windows()
+        except OSError:
+            return
+        answered.wait(0.5)
+
+
+def fill_folder_picker(folder: Path, result: dict, timeout: float = 60) -> None:
+    """
+    Wait for Chrome's folder picker, type folder into it and accept it. The
+    picker is a Win32 common dialog: its file name box is control 0x480 in
+    Wine's dialog and an Edit inside the ComboBoxEx32 0x47C in Windows' own.
+    """
+    user32, _, callback = win32()
+    WM_SETTEXT, WM_COMMAND, IDOK = 0x000C, 0x0111, 1
 
     def picker() -> tuple | None:
         found = []
