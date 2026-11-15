@@ -44,7 +44,7 @@ namespace UboSetup
             catch (Exception e)
             {
                 session.Log("UboProbe: " + e);
-                session["UBOLPA_PROBE_ERROR"] = Escape(e.Message);
+                session["UBOLPA_PROBE_ERROR"] = e.Message;
             }
             return ActionResult.Success;
         }
@@ -57,9 +57,9 @@ namespace UboSetup
                 string version = Str(chrome, "version") ?? "(version not found)";
                 string scope = Str(chrome, "scope") == "user" ? "installed for this user" : "installed for all users";
                 session["UBOLPA_CHROME_FOUND"] = "1";
-                session["UBOLPA_CHROME_TEXT"] = Escape($"Google Chrome {version}, {scope}");
+                session["UBOLPA_CHROME_TEXT"] = $"Google Chrome {version}, {scope}";
             }
-            session["UBOLPA_USER_DATA"] = Escape(Str(chrome, "user_data") ?? "");
+            session["UBOLPA_USER_DATA"] = Str(chrome, "user_data") ?? "";
 
             var profiles = ((object[])info["profiles"]).Cast<Dictionary<string, object>>().ToList();
             int shown = Math.Min(profiles.Count, MaxProfiles);
@@ -76,7 +76,7 @@ namespace UboSetup
                     label += ", already has uBlock Origin";
                 string n = (i + 1).ToString();
                 session[$"UBOLPA_P{n}_DIR"] = Str(profile, "dir");
-                session[$"UBOLPA_P{n}_LABEL"] = Escape(label);
+                session[$"UBOLPA_P{n}_LABEL"] = label;
                 session[$"UBOLPA_P{n}"] = "1";
                 if (loaded)
                     session[$"UBOLPA_P{n}_LOADED"] = "1";
@@ -294,7 +294,7 @@ namespace UboSetup
             using (var record = new Record(1))
             {
                 record.FormatString = "[1]";
-                record[1] = text;
+                record[1] = Escape(text);
                 // MB_OK with MB_ICONERROR.
                 session.Message((InstallMessage)((int)InstallMessage.Error | 0x10), record);
             }
@@ -306,8 +306,11 @@ namespace UboSetup
         static string Str(Dictionary<string, object> d, string key) =>
             d.TryGetValue(key, out object value) && value != null ? value.ToString() : null;
 
-        // Text shown through a formatted field: [ ] { } would otherwise read
-        // as property references and styles.
+        // For text in a record field. MsiFormatRecord puts the field's value
+        // into the format string and then formats the result, so [ ] { } in
+        // the value would read as property references and styles. A property
+        // shown through [NAME] in a dialog text is not formatted again, so
+        // property values are stored as they are.
         static string Escape(string text)
         {
             var escaped = new StringBuilder();

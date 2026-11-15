@@ -192,10 +192,11 @@ closed, a click on **Allow** is the only step Setup leaves to the user; with
 Chrome running, Setup first asks to restart it, and Chrome reopens its tabs.
 
 Maintenance is the updater in `%LOCALAPPDATA%\Programs\ubo-lpa`, the daily
-update, an entry in the list of installed apps and a Start menu entry, "Update,
-change or remove uBlock Origin for Chrome". That entry reopens Setup at its
+update, an entry in the list of installed apps and two Start menu entries.
+"Update, change or remove uBlock Origin for Chrome" reopens Setup at its
 maintenance page: **Update now**, **Change settings** (release, profiles, daily
-update) or **Remove**. Without maintenance, Setup works from its own temporary
+update) or **Remove**. "uBlock Origin update log" opens `update.log`, the output
+of the daily update and of Setup. Without maintenance, Setup works from its own temporary
 copy and leaves nothing but the uBlock Origin folder, as a portable install.
 Running the MSI again with the same folder updates it, and keeps uBO's settings.
 

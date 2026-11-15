@@ -126,6 +126,23 @@ def close_chrome() -> None:
         time.sleep(3)
 
 
+# A profile name that Windows Installer would change if the custom action's
+# labels went through formatting a second time: [1] would turn into a field
+# reference, and an escaped [\[] would show as typed.
+BRACKET_NAME = "Test [1] {profile}"
+
+
+def rename_profile(folder: str, name: str) -> None:
+    """Rename a profile in Local State, with Chrome closed, as its profile
+    menu would."""
+    close_chrome()
+    path = USER_DATA / "Local State"
+    local_state = json.loads(path.read_text(encoding="utf-8"))
+    local_state["profile"]["info_cache"][folder]["name"] = name
+    path.write_text(json.dumps(local_state), encoding="utf-8")
+    note(f"renamed profile {folder} to {name!r}")
+
+
 def state(root: Path = ROOT) -> dict:
     return json.loads((root / ".state.json").read_text())
 
@@ -241,7 +258,8 @@ def install_with_wizard(msi: Path) -> None:
         wait_for_finish(window)
     check(clicker.prompts == 1,
           f"expected one remote debugging prompt during Setup, Chrome showed {clicker.prompts}")
-    page(window, "wizard-7-finish")
+    texts = page(window, "wizard-7-finish")
+    check("uBlock Origin is ready" in texts, f"the Finish page after an install says: {texts}")
     click(window, "&Finish")
     check(process.wait(timeout=120) == 0, f"msiexec /i exited with {process.returncode}")
     show_ubo_panel(OUT / "desktop-after-install.png")
@@ -280,9 +298,10 @@ def show_ubo_panel(path: Path) -> None:
     screenshot(path)
 
 
-def maintenance(action: str, shot: str, untick_updates: bool = False) -> None:
+def maintenance(action: str, shot: str, untick_updates: bool = False) -> tuple[list[str], list[str]]:
     """Open the maintenance page from the Start menu entry, click the button
-    named action, and go on through the wizard to Finish."""
+    named action, and go on through the wizard to Finish. Returns the texts
+    of the Ready page and of the Finish page."""
     os.startfile(str(MAINTENANCE_LNK))  # type: ignore[attr-defined]
     window = wizard()
     first_page(window, "&Update now")
@@ -301,15 +320,18 @@ def maintenance(action: str, shot: str, untick_updates: bool = False) -> None:
             toggle(window, "&Update uBlock Origin daily")
         page(window, f"{shot}-4-options")
         click(window, "&Next")
-    page(window, f"{shot}-5-ready")
-    click(window, "&Change")
+    ready = page(window, f"{shot}-5-ready")
+    # WiX's Ready page shows a Remove button in Remove mode, and Change in
+    # Change mode, which Update now and Change settings both use.
+    click(window, "&Remove" if action == "&Remove" else "&Change")
     wait_for_finish(window)
-    page(window, f"{shot}-6-finish")
+    finish = page(window, f"{shot}-6-finish")
     click(window, "&Finish")
     window.wait_not("exists", timeout=120)
     # Windows Installer runs one installation at a time; let this one end
     # before the next starts.
     time.sleep(10)
+    return ready, finish
 
 
 def install_portable(msi: Path) -> str:
@@ -329,6 +351,8 @@ def install_portable(msi: Path) -> str:
     texts = page(window, "portable-2-chrome")
     check(any(t.endswith("folder Default") for t in texts),
           f"the Chrome page does not offer the Default profile: {texts}")
+    check(any(t.startswith(f"{BRACKET_NAME}, folder Default") for t in texts),
+          f"the Chrome page does not show the profile name {BRACKET_NAME!r} as it is: {texts}")
     click(window, "&Next")
     # Windows Installer's PathEdit control, which shows the folder.
     folder = control(window, re.compile(r".*\\uBOLPA\\?"), cls=None)
@@ -444,10 +468,15 @@ def main() -> int:
         run_task()
 
         note("maintenance: Change settings, without the daily update")
-        maintenance("&Change settings", "maintenance-change", untick_updates=True)
+        ready, finish = maintenance("&Change settings", "maintenance-change", untick_updates=True)
+        check("uBlock Origin is ready" in finish, f"the Finish page after Change settings says: {finish}")
         verify_task(present=False)
         note("maintenance: Update now")
-        maintenance("&Update now", "maintenance-update")
+        ready, finish = maintenance("&Update now", "maintenance-update")
+        check(any("install the newest uBlock Origin release" in t for t in ready)
+              and not any("a newer release is chosen" in t for t in ready),
+              f"the Ready page for Update now says: {ready}")
+        check("uBlock Origin is ready" in finish, f"the Finish page after Update now says: {finish}")
         verify_task(present=False)
 
         note(f"upgrading to {version(second)}")
@@ -459,13 +488,15 @@ def main() -> int:
         check((state()["ext_id"], state()["comp_id"]) == ids, "the upgrade changed the extension IDs")
         verify_chrome(*ids)
 
-        result = subprocess.run(["msiexec", "/x", str(second), "/qn", "/l*v",
-                                 str(OUT / "uninstall.log")], timeout=900)
-        check(result.returncode == 0, f"the uninstall exited with {result.returncode}")
+        note("maintenance: Remove")
+        ready, finish = maintenance("&Remove", "maintenance-remove")
+        check("ubo-lpa is removed" in finish and "uBlock Origin is ready" not in finish,
+              f"the Finish page after Remove says: {finish}")
         verify_removed()
         note("uninstall removed the program, the extension folder, the Start menu folder, "
              "the entry in the list of installed apps and the scheduled task")
 
+        rename_profile("Default", BRACKET_NAME)
         bundled = install_portable(first)
         check(arp_entry() is None, "the install without maintenance added an entry to the list of installed apps")
         check(not PROGRAM.exists(), f"the install without maintenance installed {PROGRAM}")

@@ -757,6 +757,23 @@ Chrome keeps its profiles in `%LOCALAPPDATA%\Google\Chrome\User Data`
 whether it is installed for this user or for all users; only the `UserDataDir`
 policy moves them, and `load` reads that policy.
 
+DevTools has a direct `Extensions.loadUnpacked(path)`, and retail Chrome 157
+accepts it on a connection allowed in the prompt, without
+`--enable-unsafe-extension-debugging`. Chrome loads extensions that way for the
+current session only: after a restart they are gone, as with
+`--load-extension`. When `Input.dispatchDragEvent` simulates dropping the
+folder onto `chrome://extensions`, the page receives it as a directory, but the
+browser answers `loadUnpacked({useDraggedPath: true})` with "No dragged path":
+it records the path only for a drag from the operating system.
+
+`load` was tested with retail Windows Chrome 157 under Wine 11.22: from a fresh
+profile, from a running Chrome with and without remote debugging, across a
+restart, and with a second run that finds both loaded and does not prompt. On
+the GitHub Actions Windows runner, `tests/windows/run.py` and
+`tests/windows/msi_test.py` run it with the runner's retail Chrome, with UI
+Automation clicking Allow, and check that Chrome showed exactly one prompt and
+kept both extensions after closing.
+
 ### The MSI's setup wizard
 
 The MSI contains Python, `ubo-lpa.py` and the uBO release that was newest when
@@ -784,23 +801,6 @@ copy, while the progress page shows, and its `InstallUISequence` skips
 the product, so the chosen folder is all that is left. Running the MSI again
 with the same folder updates it in place, with the same keys and so the same
 extension IDs.
-
-DevTools has a direct `Extensions.loadUnpacked(path)`, and retail Chrome 157
-accepts it on a connection allowed in the prompt, without
-`--enable-unsafe-extension-debugging`. Chrome loads extensions that way for the
-current session only: after a restart they are gone, as with
-`--load-extension`. When `Input.dispatchDragEvent` simulates dropping the
-folder onto `chrome://extensions`, the page receives it as a directory, but the
-browser answers `loadUnpacked({useDraggedPath: true})` with "No dragged path":
-it records the path only for a drag from the operating system.
-
-`load` was tested with retail Windows Chrome 157 under Wine 11.22: from a fresh
-profile, from a running Chrome with and without remote debugging, across a
-restart, and with a second run that finds both loaded and does not prompt. On
-the GitHub Actions Windows runner, `tests/windows/run.py` and
-`tests/windows/msi_test.py` run it with the runner's retail Chrome, with UI
-Automation clicking Allow, and check that Chrome showed exactly one prompt and
-kept both extensions after closing.
 
 ### `--load-extension`
 

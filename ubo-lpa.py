@@ -88,6 +88,8 @@ ASSETS = Path(__file__).resolve().parent / "assets"
 # pythonw.exe, which the Windows scheduled task runs, starts without a console,
 # so sys.stdout is None until main() points it at the log file.
 _COLOR = sys.stdout is not None and sys.stdout.isatty() and not IS_WINDOWS
+# The file main() sends the output to, when there is no console.
+LOG_PATH: Path | None = None
 
 
 def _c(code: str, text: str) -> str:
@@ -1901,7 +1903,8 @@ class WindowsInstaller(Installer):
         except SystemExit as exc:
             if exc.code and user_data is None:
                 guide = self.root / "load-by-hand.html"
-                guide.write_text(GUIDE_HTML.replace("__EXT__", html.escape(str(self.ext)))
+                guide.write_text(GUIDE_HTML.replace("__INTRO__", guide_intro(guide))
+                                 .replace("__EXT__", html.escape(str(self.ext)))
                                  .replace("__COMP__", html.escape(str(self.comp))),
                                  encoding="utf-8")
                 info(f"The steps for loading both folders by hand: {guide}")
@@ -2574,9 +2577,7 @@ GUIDE_HTML = """<!doctype html>
 </style></head>
 <body>
 <header><h1>Load uBlock Origin in Chrome</h1>
-<p>Setup could not load uBlock Origin into Chrome. Load it by hand with these steps; they are
-   needed only once. The update log (update.log, in the same folder as this page) says what
-   went wrong.</p></header>
+<p>__INTRO__</p></header>
 <main><ol>
   <li>Open the extensions page: paste this into Chrome's address bar.
     <div class="copy"><code>chrome://extensions</code><button>Copy</button></div></li>
@@ -2595,6 +2596,20 @@ for (const b of document.querySelectorAll(".copy button"))
 </script>
 </body></html>
 """
+
+
+def guide_intro(guide: Path) -> str:
+    """
+    The first paragraph of load-by-hand.html. It points to update.log only
+    when main() sends the output there, as it does under pythonw.exe. From a
+    console the output is on screen, and Setup without maintenance keeps it.
+    """
+    if LOG_PATH is not None and LOG_PATH.parent == guide.parent:
+        return ("Setup could not load uBlock Origin into Chrome. Load it by hand with these steps;\n"
+                "   they are needed only once. The update log (update.log, in the same folder as this\n"
+                "   page) says what went wrong.")
+    return ("uBlock Origin could not be loaded into Chrome automatically. Load it by hand with\n"
+            "   these steps; they are needed only once.")
 
 
 def chrome_exe() -> str | None:
@@ -2745,6 +2760,7 @@ def default_root() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global LOG_PATH
     parser = argparse.ArgumentParser(
         prog="ubo-lpa", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -2801,6 +2817,7 @@ def main(argv: list[str] | None = None) -> int:
             log_path = root / "update.log"
         log = log_path.open("a", encoding="utf-8")
         sys.stdout = sys.stderr = log
+        LOG_PATH = log_path
         print(f"--- {datetime.datetime.now():%Y-%m-%d %H:%M:%S} {' '.join(sys.argv[1:])}")
 
     if args.command in ("install", "update"):

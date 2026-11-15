@@ -16,7 +16,7 @@
 
   <String Id="UboChromeTitle" Value="{\WixUI_Font_Title}Google Chrome" />
   <String Id="UboChromeDescription" Value="Choose the Chrome profiles that get uBlock Origin." />
-  <String Id="UboChromeMissing" Value="Google Chrome was not found. Setup still builds uBlock Origin in its folder; once Chrome is installed, Change settings in the Start menu entry loads it." />
+  <String Id="UboChromeMissing" Value="Google Chrome was not found. Setup still builds uBlock Origin in its folder. Once Chrome is installed, running Setup again loads it into Chrome." />
   <String Id="UboChromeNoProfiles" Value="Chrome has no profile yet. Setup starts Chrome, which creates its first profile, and loads uBlock Origin into it." />
   <String Id="UboChromeProfiles" Value="Profiles in [UBOLPA_USER_DATA]:" />
   <String Id="UboChromeMore" Value="and [UBOLPA_PROFILES_MORE] more, which Setup leaves out" />
@@ -42,11 +42,23 @@
   <String Id="VerifyReadyDlgInstallTitle" Value="{\WixUI_Font_Title}Ready to install" />
   <String Id="VerifyReadyDlgInstallText" Value="Click Install to set up uBlock Origin. Setup then loads it into Chrome, which asks once whether to allow remote debugging: click Allow. No administrator rights are needed." />
   <String Id="VerifyReadyDlgChangeTitle" Value="{\WixUI_Font_Title}Ready to apply" />
-  <String Id="VerifyReadyDlgChangeText" Value="Click Change to update uBlock Origin if a newer release is chosen, apply the daily update setting and load uBlock Origin into the chosen Chrome profiles." />
+  <!-- Update now and Change settings both reach the Ready page in Change mode;
+       their buttons on the maintenance page set UBOLPA_READY_TEXT. -->
+  <String Id="VerifyReadyDlgChangeText" Value="[UBOLPA_READY_TEXT]" />
+  <String Id="UboReadyChangeText" Value="Click Change to update uBlock Origin if a newer release is chosen, apply the daily update setting and load uBlock Origin into the chosen Chrome profiles." />
+  <String Id="UboReadyUpdateText" Value="Click Change to install the newest uBlock Origin release if it is newer than the installed one, and load uBlock Origin into Chrome." />
   <String Id="VerifyReadyDlgRemoveTitle" Value="{\WixUI_Font_Title}Ready to remove" />
   <String Id="VerifyReadyDlgRemoveText" Value="Click Remove to remove ubo-lpa, uBlock Origin's folder and the daily update." />
   <String Id="ProgressDlgTitleInstalling" Value="{\WixUI_Font_Title}Installing uBlock Origin for Chrome" />
   <String Id="ProgressDlgTextInstalling" Value="Building uBlock Origin and loading it into Chrome." />
-  <String Id="ExitDialogTitle" Value="{\WixUI_Font_Bigger}uBlock Origin is ready" />
-  <String Id="ExitDialogDescription" Value="uBlock Origin is running in Chrome. If Chrome's prompt was declined, Setup opened the steps for loading it by hand." />
+  <!-- The Finish page differs after Remove, and when Setup does not load
+       uBlock Origin into Chrome; ui.wxs sets UBOLPA_EXIT_TITLE and _TEXT. -->
+  <String Id="ExitDialogTitle" Value="{\WixUI_Font_Bigger}[UBOLPA_EXIT_TITLE]" />
+  <String Id="ExitDialogDescription" Value="[UBOLPA_EXIT_TEXT]" />
+  <String Id="UboExitReadyTitle" Value="uBlock Origin is ready" />
+  <String Id="UboExitReadyText" Value="uBlock Origin is running in Chrome. If Chrome's prompt was declined, Setup opened the steps for loading it by hand." />
+  <String Id="UboExitNotLoadedTitle" Value="uBlock Origin is installed" />
+  <String Id="UboExitNotLoadedText" Value="Setup did not load it into Chrome: Chrome was not found, or no profile was ticked. Running Setup again loads it." />
+  <String Id="UboExitRemovedTitle" Value="ubo-lpa is removed" />
+  <String Id="UboExitRemovedText" Value="Its folder and the daily update are removed. Remove both extensions on chrome://extensions as well." />
 </WixLocalization>

@@ -19,6 +19,11 @@
       <!-- The folder control and the folder browser edit the directory whose
            name this property holds, as WixUI's InstallDirDlg does. -->
       <Property Id="UBOLPA_DIR_PROP" Value="UBOLPA_DIR" />
+      <!-- The Ready page's text in Change mode and the Finish page's texts,
+           which the maintenance buttons and the Chrome page set. -->
+      <Property Id="UBOLPA_READY_TEXT" Value="!(loc.UboReadyChangeText)" />
+      <Property Id="UBOLPA_EXIT_TITLE" Value="!(loc.UboExitReadyTitle)" />
+      <Property Id="UBOLPA_EXIT_TEXT" Value="!(loc.UboExitReadyText)" />
 
       <DialogRef Id="BrowseDlg" />
       <DialogRef Id="ErrorDlg" />
@@ -101,7 +106,11 @@
         </Control>
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
           <Publish Event="DoAction" Value="UboSelectProfiles" Order="1" />
-          <Publish Event="NewDialog" Value="UboOptionsDlg" Order="2" />
+          <Publish Property="UBOLPA_EXIT_TITLE" Value="!(loc.UboExitReadyTitle)" Order="2" Condition="NOT UBOLPA_SKIP_LOAD" />
+          <Publish Property="UBOLPA_EXIT_TEXT" Value="!(loc.UboExitReadyText)" Order="3" Condition="NOT UBOLPA_SKIP_LOAD" />
+          <Publish Property="UBOLPA_EXIT_TITLE" Value="!(loc.UboExitNotLoadedTitle)" Order="4" Condition="UBOLPA_SKIP_LOAD" />
+          <Publish Property="UBOLPA_EXIT_TEXT" Value="!(loc.UboExitNotLoadedText)" Order="5" Condition="UBOLPA_SKIP_LOAD" />
+          <Publish Event="NewDialog" Value="UboOptionsDlg" Order="6" />
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
           <Publish Event="SpawnDialog" Value="CancelDlg" />
@@ -155,19 +164,25 @@
         <Control Id="UpdateButton" Type="PushButton" X="20" Y="76" Width="110" Height="17" Default="yes" Text="!(loc.UboMaintenanceUpdate)">
           <Publish Property="UBOLPA_MODE" Value="update" Order="1" />
           <Publish Property="WixUI_InstallMode" Value="Change" Order="2" />
-          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
+          <Publish Property="UBOLPA_READY_TEXT" Value="!(loc.UboReadyUpdateText)" Order="3" />
+          <Publish Property="UBOLPA_EXIT_TITLE" Value="!(loc.UboExitReadyTitle)" Order="4" />
+          <Publish Property="UBOLPA_EXIT_TEXT" Value="!(loc.UboExitReadyText)" Order="5" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="6" />
         </Control>
         <Control Id="UpdateText" Type="Text" X="138" Y="74" Width="214" Height="40" NoPrefix="yes" Text="!(loc.UboMaintenanceUpdateText)" />
         <Control Id="ChangeButton" Type="PushButton" X="20" Y="122" Width="110" Height="17" Text="!(loc.UboMaintenanceChange)">
           <Publish Property="UBOLPA_MODE" Value="change" Order="1" />
           <Publish Property="WixUI_InstallMode" Value="Change" Order="2" />
-          <Publish Event="NewDialog" Value="UboReleaseDlg" Order="3" />
+          <Publish Property="UBOLPA_READY_TEXT" Value="!(loc.UboReadyChangeText)" Order="3" />
+          <Publish Event="NewDialog" Value="UboReleaseDlg" Order="4" />
         </Control>
         <Control Id="ChangeText" Type="Text" X="138" Y="120" Width="214" Height="40" NoPrefix="yes" Text="!(loc.UboMaintenanceChangeText)" />
         <Control Id="RemoveButton" Type="PushButton" X="20" Y="168" Width="110" Height="17" Text="!(loc.UboMaintenanceRemove)">
           <Publish Property="UBOLPA_MODE" Value="remove" Order="1" />
           <Publish Property="WixUI_InstallMode" Value="Remove" Order="2" />
-          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
+          <Publish Property="UBOLPA_EXIT_TITLE" Value="!(loc.UboExitRemovedTitle)" Order="3" />
+          <Publish Property="UBOLPA_EXIT_TEXT" Value="!(loc.UboExitRemovedText)" Order="4" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="5" />
         </Control>
         <Control Id="RemoveText" Type="Text" X="138" Y="166" Width="214" Height="52" NoPrefix="yes" Text="!(loc.UboMaintenanceRemoveText)" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
