@@ -108,11 +108,16 @@ namespace UboSetup
             string installed = Str(install, "version");
             if (installed != null)
                 session["UBOLPA_INSTALLED_VERSION"] = installed;
-            // When ubo-lpa is already installed, the daily update checkbox
-            // starts ticked if the scheduled task exists, and unticked if it
-            // does not.
+            // When ubo-lpa is already installed, the update checkbox starts
+            // ticked if the scheduled task exists, and the dropdown at the
+            // interval recorded in the install's state.
             if (session.EvaluateCondition("Installed"))
+            {
                 session["AUTOUPDATE"] = Equals(install["autoupdate"], true) ? "1" : "";
+                string interval = Str(install, "interval");
+                if (!string.IsNullOrEmpty(interval))
+                    session["UBOLPA_INTERVAL"] = interval;
+            }
         }
 
         // Run by the Chrome page's Next button. Joins the ticked profiles with

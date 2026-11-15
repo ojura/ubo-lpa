@@ -11,7 +11,7 @@
   <String Id="UboReleaseNewest" Value="The &amp;newest release, downloaded from GitHub" />
   <String Id="UboReleaseBundled" Value="The release &amp;bundled with this installer" />
   <String Id="UboReleaseNoGitHub" Value="Setup could not reach GitHub, so the bundled release is selected." />
-  <String Id="UboReleaseNote" Value="Both are uBlock Origin's own releases, which Setup patches to run as a legacy packaged app. The daily update always installs the newest release." />
+  <String Id="UboReleaseNote" Value="Both are uBlock Origin's own releases, which Setup patches to run as a legacy packaged app. Updates always install the newest release." />
   <String Id="UboProbeError" Value="Setup could not read Chrome's profiles or check GitHub: [UBOLPA_PROBE_ERROR]" />
 
   <String Id="UboChromeTitle" Value="{\WixUI_Font_Title}Google Chrome" />
@@ -21,13 +21,19 @@
   <String Id="UboChromeProfiles" Value="Profiles in [UBOLPA_USER_DATA]:" />
   <String Id="UboChromeMore" Value="and [UBOLPA_PROFILES_MORE] more, which Setup leaves out" />
 
-  <String Id="UboOptionsTitle" Value="{\WixUI_Font_Title}Folder and updates" />
-  <String Id="UboOptionsDescription" Value="Choose where uBlock Origin is kept, and how it stays up to date." />
-  <String Id="UboOptionsFolder" Value="uBlock Origin and its toolbar button are kept in this folder, which Chrome loads them from:" />
+  <String Id="UboOptionsTitle" Value="{\WixUI_Font_Title}Installation" />
+  <String Id="UboOptionsDescription" Value="Choose the folder, and a full or a portable installation." />
+  <String Id="UboOptionsFolder" Value="Folder that Chrome loads uBlock Origin and its toolbar button from:" />
   <String Id="UboOptionsChange" Value="C&amp;hange..." />
-  <String Id="UboOptionsMaintenance" Value="Install &amp;maintenance: the updater, a Start menu entry to update, change or remove ubo-lpa, and an entry in the list of installed apps" />
-  <String Id="UboOptionsUpdates" Value="&amp;Update uBlock Origin daily" />
-  <String Id="UboOptionsPortable" Value="Without maintenance, Setup leaves nothing but the folder above: no updater, Start menu entry, daily update or entry in the list of installed apps. Running this installer, or a newer one, with the same folder updates uBlock Origin." />
+  <String Id="UboOptionsFull" Value="&amp;Full installation" />
+  <String Id="UboOptionsFullText" Value="Installs the maintenance tool, which updates uBlock Origin and can change or remove ubo-lpa from the Start menu." />
+  <String Id="UboOptionsUpdates" Value="&amp;Check for and install uBlock Origin updates" />
+  <String Id="UboIntervalDaily" Value="Daily" />
+  <String Id="UboIntervalWeekly" Value="Weekly" />
+  <String Id="UboIntervalBiweekly" Value="Every 2 weeks" />
+  <String Id="UboIntervalMonthly" Value="Monthly" />
+  <String Id="UboOptionsPortableChoice" Value="&amp;Portable" />
+  <String Id="UboOptionsPortable" Value="Installs the chosen uBlock Origin release into Chrome and leaves only the folder above, with no updates, Start menu entries or entry in the list of installed apps. Running Setup again with the same folder updates it." />
 
   <String Id="UboMaintenanceTitle" Value="{\WixUI_Font_Title}Maintain ubo-lpa" />
   <String Id="UboMaintenanceDescription" Value="uBlock Origin [UBOLPA_INSTALLED_VERSION] is installed." />
@@ -35,9 +41,9 @@
   <String Id="UboMaintenanceUpdate" Value="&amp;Update now" />
   <String Id="UboMaintenanceUpdateText" Value="Install the newest uBlock Origin release if it is newer than this one, and load uBlock Origin into Chrome." />
   <String Id="UboMaintenanceChange" Value="&amp;Change settings" />
-  <String Id="UboMaintenanceChangeText" Value="Choose the uBlock Origin release, the Chrome profiles that get it, and whether it updates daily." />
+  <String Id="UboMaintenanceChangeText" Value="Choose the uBlock Origin release, the Chrome profiles that get it, and how often it is updated." />
   <String Id="UboMaintenanceRemove" Value="&amp;Remove" />
-  <String Id="UboMaintenanceRemoveText" Value="Remove ubo-lpa, uBlock Origin's folder and the daily update. Chrome lists both extensions until they are removed on chrome://extensions." />
+  <String Id="UboMaintenanceRemoveText" Value="Remove ubo-lpa, uBlock Origin's folder and the update checks. Chrome lists both extensions until they are removed on chrome://extensions." />
 
   <String Id="VerifyReadyDlgInstallTitle" Value="{\WixUI_Font_Title}Ready to install" />
   <String Id="VerifyReadyDlgInstallText" Value="Click Install to set up uBlock Origin. Setup then loads it into Chrome, which asks once whether to allow remote debugging: click Allow. No administrator rights are needed." />
@@ -45,10 +51,10 @@
   <!-- Update now and Change settings both reach the Ready page in Change mode;
        their buttons on the maintenance page set UBOLPA_READY_TEXT. -->
   <String Id="VerifyReadyDlgChangeText" Value="[UBOLPA_READY_TEXT]" />
-  <String Id="UboReadyChangeText" Value="Click Change to update uBlock Origin if a newer release is chosen, apply the daily update setting and load uBlock Origin into the chosen Chrome profiles." />
+  <String Id="UboReadyChangeText" Value="Click Change to update uBlock Origin if a newer release is chosen, apply the update setting and load uBlock Origin into the chosen Chrome profiles." />
   <String Id="UboReadyUpdateText" Value="Click Change to install the newest uBlock Origin release if it is newer than the installed one, and load uBlock Origin into Chrome." />
   <String Id="VerifyReadyDlgRemoveTitle" Value="{\WixUI_Font_Title}Ready to remove" />
-  <String Id="VerifyReadyDlgRemoveText" Value="Click Remove to remove ubo-lpa, uBlock Origin's folder and the daily update." />
+  <String Id="VerifyReadyDlgRemoveText" Value="Click Remove to remove ubo-lpa, uBlock Origin's folder and the update checks." />
   <String Id="ProgressDlgTitleInstalling" Value="{\WixUI_Font_Title}Installing uBlock Origin for Chrome" />
   <String Id="ProgressDlgTextInstalling" Value="Building uBlock Origin and loading it into Chrome." />
   <!-- The Finish page differs after Remove, and when Setup does not load
@@ -60,5 +66,5 @@
   <String Id="UboExitNotLoadedTitle" Value="uBlock Origin is installed" />
   <String Id="UboExitNotLoadedText" Value="Setup did not load it into Chrome: Chrome was not found, or no profile was ticked. Running Setup again loads it." />
   <String Id="UboExitRemovedTitle" Value="ubo-lpa is removed" />
-  <String Id="UboExitRemovedText" Value="Its folder and the daily update are removed. Remove both extensions on chrome://extensions as well." />
+  <String Id="UboExitRemovedText" Value="Its folder and the update checks are removed. Remove both extensions on chrome://extensions as well." />
 </WixLocalization>

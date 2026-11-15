@@ -5,12 +5,12 @@ End-to-end test of the MSI on a fresh Windows runner with retail Chrome:
   Allow when Setup loads uBlock Origin into Chrome, then checks of the files,
   the Start menu entries, the entry in the list of installed apps, the
   scheduled task and Chrome's record of both extensions;
-- the maintenance page, opened from the Start menu: Change settings turns the
-  daily update off, Update now keeps it off, and so does a silent upgrade,
-  which also keeps the extension IDs;
-- uninstall;
-- an install without maintenance, of the bundled uBO release into another
-  folder, which leaves nothing but that folder.
+- the maintenance page, opened from the Start menu: Change settings sets
+  monthly update checks, then turns them off; Update now keeps them off, and
+  so does a silent upgrade, which also keeps the extension IDs;
+- Remove, from the maintenance page;
+- a portable installation, of the bundled uBO release into another folder,
+  which leaves nothing but that folder.
 
 Usage: python tests/windows/msi_test.py FIRST.msi SECOND.msi
 (SECOND has the higher version.) Needs pywinauto and Pillow. Screenshots of
@@ -217,6 +217,20 @@ def toggle(window, text) -> None:
     check(box.get_check_state() != before, f"{text} did not change")
 
 
+def choose(window, item: str) -> None:
+    """Pick item in the visible, enabled drop-down list on the page shown."""
+    deadline = time.time() + 60
+    while True:
+        boxes = [c for c in window.wrapper_object().descendants()
+                 if c.class_name() == "ComboBox" and c.is_visible() and c.is_enabled()]
+        if boxes or time.time() > deadline:
+            break
+        time.sleep(0.5)
+    check(len(boxes) == 1, f"expected one drop-down list on the page, found {len(boxes)}")
+    boxes[0].select(item)
+    check(boxes[0].selected_text() == item, f"the drop-down list shows {boxes[0].selected_text()!r}, not {item!r}")
+
+
 def first_page(window, button: str) -> None:
     """Wait for the first page. Until it appears, Windows Installer shows its
     preparing page, which in this MSI stays up while UboProbe runs ubo-lpa.py
@@ -298,7 +312,8 @@ def show_ubo_panel(path: Path) -> None:
     screenshot(path)
 
 
-def maintenance(action: str, shot: str, untick_updates: bool = False) -> tuple[list[str], list[str]]:
+def maintenance(action: str, shot: str, untick_updates: bool = False,
+                interval: str | None = None) -> tuple[list[str], list[str]]:
     """Open the maintenance page from the Start menu entry, click the button
     named action, and go on through the wizard to Finish. Returns the texts
     of the Ready page and of the Finish page."""
@@ -315,9 +330,11 @@ def maintenance(action: str, shot: str, untick_updates: bool = False) -> tuple[l
               "the Chrome page does not show that Default already has uBlock Origin")
         click(window, "&Next")
         if untick_updates:
-            check(control(window, "&Update uBlock Origin daily").get_check_state() == 1,
-                  "the daily update is not ticked before it is turned off")
-            toggle(window, "&Update uBlock Origin daily")
+            check(control(window, "&Check for and install uBlock Origin updates").get_check_state() == 1,
+                  "the update checks are not ticked before they are turned off")
+            toggle(window, "&Check for and install uBlock Origin updates")
+        if interval:
+            choose(window, interval)
         page(window, f"{shot}-4-options")
         click(window, "&Next")
     ready = page(window, f"{shot}-5-ready")
@@ -364,7 +381,7 @@ def install_portable(msi: Path) -> str:
     # a pointer; set_edit_text sends EM_REPLACESEL.
     folder.set_edit_text(str(PORTABLE))
     folder.type_keys("{TAB}")
-    toggle(window, re.compile(r"Install &maintenance.*"))
+    toggle(window, "&Portable")
     page(window, "portable-3-options")
     click(window, "&Next")
     page(window, "portable-4-ready")
@@ -402,10 +419,11 @@ def verify_task(present: bool) -> None:
                              capture_output=True, text=True).stdout
         check(str(PROGRAM / "python" / "pythonw.exe").lower() in xml.lower(),
               "the scheduled task does not run the installed pythonw.exe")
+        check("--if-due" in xml, "the scheduled task does not run install --if-due")
     else:
         check(not task_fields(), "the scheduled task is still there")
     check(state().get("autoupdate") is present, f"the state file records autoupdate {state().get('autoupdate')}")
-    note(f"the daily update is {'on' if present else 'off'}")
+    note(f"the update checks are {'on' if present else 'off'}")
 
 
 def verify_chrome(ubo_id: str, comp_id: str, root: Path = ROOT) -> None:
@@ -463,11 +481,16 @@ def main() -> int:
         install_with_wizard(first)
         verify_install(version(first))
         verify_task(present=True)
+        check(state().get("interval") == "daily", f"the state file records interval {state().get('interval')}")
         ids = state()["ext_id"], state()["comp_id"]
         verify_chrome(*ids)
         run_task()
 
-        note("maintenance: Change settings, without the daily update")
+        note("maintenance: Change settings, monthly update checks")
+        ready, finish = maintenance("&Change settings", "maintenance-monthly", interval="Monthly")
+        verify_task(present=True)
+        check(state().get("interval") == "monthly", f"the state file records interval {state().get('interval')}")
+        note("maintenance: Change settings, without update checks")
         ready, finish = maintenance("&Change settings", "maintenance-change", untick_updates=True)
         check("uBlock Origin is ready" in finish, f"the Finish page after Change settings says: {finish}")
         verify_task(present=False)

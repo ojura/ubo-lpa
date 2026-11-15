@@ -3,7 +3,7 @@
   Per-user MSI for ubo-lpa. With maintenance, the default, it installs the
   installer itself, with an embedded Python, to %LOCALAPPDATA%\Programs\ubo-lpa,
   and runs it: install patches uBO into the chosen folder (%LOCALAPPDATA%\uBOLPA
-  by default), timer schedules the daily update, load loads both extensions into
+  by default), timer schedules the update checks, load loads both extensions into
   the chosen Chrome profiles. A Start menu entry reruns this MSI to update,
   change or remove it.
 
@@ -42,7 +42,13 @@
     <!-- The wizard's choices. Their defaults are what a silent install uses. -->
     <Property Id="UBOLPA_SOURCE" Value="github" Secure="yes" />
     <Property Id="UBOLPA_MAINTENANCE" Value="1" Secure="yes" />
+    <!-- The options page's radio buttons: "full" or "portable". Its Next button
+         sets UBOLPA_MAINTENANCE from it. -->
+    <Property Id="UBOLPA_KIND" Value="full" />
     <Property Id="AUTOUPDATE" Value="1" Secure="yes" />
+    <!-- How often the daily run looks for a new uBO release: daily, weekly,
+         biweekly or monthly, as timer's interval option takes it. -->
+    <Property Id="UBOLPA_INTERVAL" Value="daily" Secure="yes" />
     <!-- timer's option: the options page sets it to "" or "off". keep, the
          default, schedules the update unless an earlier setup switched it off. -->
     <Property Id="UBOLPA_TIMER_ARG" Value="--keep" Secure="yes" />
@@ -72,11 +78,11 @@
 
     <Component Id="MenuShortcuts" Directory="MenuFolder">
       <Shortcut Id="MaintenanceShortcut" Name="Update, change or remove uBlock Origin for Chrome"
-                Description="Update uBlock Origin now, choose Chrome profiles and daily updates, or remove ubo-lpa"
+                Description="Update uBlock Origin now, choose Chrome profiles and update checks, or remove ubo-lpa"
                 Target="[SystemFolder]msiexec.exe" Arguments="/i [ProductCode]"
                 Icon="AppIcon" />
       <Shortcut Id="LogShortcut" Name="uBlock Origin update log"
-                Description="Output of the daily update"
+                Description="Output of the update checks and of Setup"
                 Target="[UBOLPA_DIR]update.log" />
       <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
       <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
@@ -153,11 +159,11 @@
     <UI>
       <ProgressText Action="StageExtensions"
                     Message="Building uBlock Origin and its toolbar button" />
-      <ProgressText Action="ScheduleUpdates" Message="Setting up the daily update" />
+      <ProgressText Action="ScheduleUpdates" Message="Setting up the update checks" />
       <ProgressText Action="LoadIntoChrome"
                     Message="Loading into Chrome: click Allow in Chrome's prompt" />
       <ProgressText Action="RemoveExtensions"
-                    Message="Removing uBlock Origin's folder and the daily update" />
+                    Message="Removing uBlock Origin's folder and the update checks" />
     </UI>
 
     <UIRef Id="UboUI" />

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   The setup wizard. A first install: Welcome, the uBO release, Chrome and its
-  profiles, the folder and the options, Ready, progress, Finish. The Start menu
+  profiles, the folder and the kind of installation, Ready, progress, Finish. The Start menu
   entry, or Modify in Apps & features, opens the maintenance page instead:
   Update now, Change settings (the same three pages) or Remove.
 
@@ -117,37 +117,61 @@
         </Control>
       </Dialog>
 
-      <!-- The folder, maintenance and the daily update. -->
+      <!-- The folder, and a full installation (with the maintenance tool and
+           update checks) or a portable one. In maintenance the kind of
+           installation is fixed, so the radio buttons are hidden and a second
+           checkbox and dropdown take their place. Only buttons and checkboxes
+           can publish events, so Next sets UBOLPA_MAINTENANCE from the choice. -->
       <Dialog Id="UboOptionsDlg" Width="370" Height="270" Title="!(loc.UboDlgTitle)">
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
         <Control Id="Title" Type="Text" X="15" Y="6" Width="290" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboOptionsTitle)" />
         <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.UboOptionsDescription)" />
-        <Control Id="FolderLabel" Type="Text" X="20" Y="52" Width="330" Height="24" NoPrefix="yes" Text="!(loc.UboOptionsFolder)" />
-        <Control Id="Folder" Type="PathEdit" X="20" Y="78" Width="268" Height="18" Property="UBOLPA_DIR_PROP" Indirect="yes" HideCondition="Installed" />
-        <Control Id="ChangeFolder" Type="PushButton" X="294" Y="78" Width="56" Height="17" Text="!(loc.UboOptionsChange)" HideCondition="Installed">
+        <Control Id="FolderLabel" Type="Text" X="20" Y="52" Width="330" Height="13" NoPrefix="yes" Text="!(loc.UboOptionsFolder)" />
+        <Control Id="Folder" Type="PathEdit" X="20" Y="67" Width="268" Height="18" Property="UBOLPA_DIR_PROP" Indirect="yes" HideCondition="Installed" />
+        <Control Id="ChangeFolder" Type="PushButton" X="294" Y="67" Width="56" Height="17" Text="!(loc.UboOptionsChange)" HideCondition="Installed">
           <Publish Property="_BrowseProperty" Value="[UBOLPA_DIR_PROP]" Order="1" />
           <Publish Event="SpawnDialog" Value="BrowseDlg" Order="2" />
         </Control>
-        <Control Id="FolderFixed" Type="Text" X="20" Y="80" Width="330" Height="13" NoPrefix="yes" HideCondition="NOT Installed" ShowCondition="Installed" Text="[UBOLPA_DIR]" />
-        <Control Id="Maintenance" Type="CheckBox" X="20" Y="106" Width="330" Height="26" Property="UBOLPA_MAINTENANCE" CheckBoxValue="1" HideCondition="Installed" Text="!(loc.UboOptionsMaintenance)">
-          <!-- Without maintenance there is no daily update, so the box shows
-               unticked; ticking maintenance again restores the default. -->
-          <Publish Property="AUTOUPDATE" Value="{}" Condition="NOT UBOLPA_MAINTENANCE" />
-          <Publish Property="AUTOUPDATE" Value="1" Condition="UBOLPA_MAINTENANCE" />
+        <Control Id="FolderFixed" Type="Text" X="20" Y="69" Width="330" Height="13" NoPrefix="yes" HideCondition="NOT Installed" ShowCondition="Installed" Text="[UBOLPA_DIR]" />
+
+        <Control Id="Kind" Type="RadioButtonGroup" X="20" Y="94" Width="330" Height="80" Property="UBOLPA_KIND" HideCondition="Installed">
+          <RadioButtonGroup Property="UBOLPA_KIND">
+            <RadioButton Value="full" X="0" Y="0" Width="330" Height="14" Text="!(loc.UboOptionsFull)" />
+            <RadioButton Value="portable" X="0" Y="66" Width="330" Height="14" Text="!(loc.UboOptionsPortableChoice)" />
+          </RadioButtonGroup>
         </Control>
-        <Control Id="Updates" Type="CheckBox" X="20" Y="138" Width="330" Height="15" Property="AUTOUPDATE" CheckBoxValue="1" DisableCondition="NOT UBOLPA_MAINTENANCE AND NOT Installed" EnableCondition="UBOLPA_MAINTENANCE OR Installed" Text="!(loc.UboOptionsUpdates)" />
-        <Control Id="Portable" Type="Text" X="20" Y="162" Width="330" Height="52" NoPrefix="yes" HideCondition="UBOLPA_MAINTENANCE OR Installed" ShowCondition="NOT UBOLPA_MAINTENANCE AND NOT Installed" Text="!(loc.UboOptionsPortable)" />
+        <Control Id="FullText" Type="Text" X="34" Y="109" Width="316" Height="22" NoPrefix="yes" HideCondition="Installed" Text="!(loc.UboOptionsFullText)" />
+        <Control Id="Updates" Type="CheckBox" X="34" Y="134" Width="212" Height="15" Property="AUTOUPDATE" CheckBoxValue="1" Text="!(loc.UboOptionsUpdates)"
+                 HideCondition="Installed" DisableCondition="UBOLPA_KIND=&quot;portable&quot;" EnableCondition="UBOLPA_KIND&lt;&gt;&quot;portable&quot;" />
+        <Control Id="Interval" Type="ComboBox" X="250" Y="133" Width="86" Height="16" Property="UBOLPA_INTERVAL" ComboList="yes"
+                 HideCondition="Installed" DisableCondition="UBOLPA_KIND=&quot;portable&quot; OR NOT AUTOUPDATE" EnableCondition="UBOLPA_KIND&lt;&gt;&quot;portable&quot; AND AUTOUPDATE">
+          <ComboBox Property="UBOLPA_INTERVAL">
+            <ListItem Value="daily" Text="!(loc.UboIntervalDaily)" />
+            <ListItem Value="weekly" Text="!(loc.UboIntervalWeekly)" />
+            <ListItem Value="biweekly" Text="!(loc.UboIntervalBiweekly)" />
+            <ListItem Value="monthly" Text="!(loc.UboIntervalMonthly)" />
+          </ComboBox>
+        </Control>
+        <Control Id="PortableText" Type="Text" X="34" Y="175" Width="316" Height="40" NoPrefix="yes" HideCondition="Installed" Text="!(loc.UboOptionsPortable)" />
+
+        <Control Id="UpdatesFixed" Type="CheckBox" X="20" Y="94" Width="212" Height="15" Property="AUTOUPDATE" CheckBoxValue="1" Text="!(loc.UboOptionsUpdates)"
+                 HideCondition="NOT Installed" ShowCondition="Installed" />
+        <Control Id="IntervalFixed" Type="ComboBox" X="236" Y="93" Width="86" Height="16" Property="UBOLPA_INTERVAL" ComboList="yes"
+                 HideCondition="NOT Installed" ShowCondition="Installed" DisableCondition="NOT AUTOUPDATE" EnableCondition="AUTOUPDATE" />
+
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
           <Publish Event="NewDialog" Value="UboChromeDlg" />
         </Control>
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
           <Publish Event="SetTargetPath" Value="[UBOLPA_DIR_PROP]" Order="1" Condition="NOT Installed" />
-          <Publish Property="UBOLPA_TIMER_ARG" Value="{}" Order="2" Condition="AUTOUPDATE AND (UBOLPA_MAINTENANCE OR Installed)" />
-          <Publish Property="UBOLPA_TIMER_ARG" Value="--off" Order="3" Condition="NOT AUTOUPDATE" />
-          <Publish Property="WixUI_InstallMode" Value="Install" Order="4" Condition="NOT Installed" />
-          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="5" />
+          <Publish Property="UBOLPA_MAINTENANCE" Value="1" Order="2" Condition="NOT Installed AND UBOLPA_KIND&lt;&gt;&quot;portable&quot;" />
+          <Publish Property="UBOLPA_MAINTENANCE" Value="{}" Order="3" Condition="NOT Installed AND UBOLPA_KIND=&quot;portable&quot;" />
+          <Publish Property="UBOLPA_TIMER_ARG" Value="--interval [UBOLPA_INTERVAL]" Order="4" Condition="AUTOUPDATE AND (UBOLPA_MAINTENANCE OR Installed)" />
+          <Publish Property="UBOLPA_TIMER_ARG" Value="--off" Order="5" Condition="NOT AUTOUPDATE" />
+          <Publish Property="WixUI_InstallMode" Value="Install" Order="6" Condition="NOT Installed" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="7" />
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
           <Publish Event="SpawnDialog" Value="CancelDlg" />

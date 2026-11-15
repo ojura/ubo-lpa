@@ -166,14 +166,14 @@ jobs:
           wizard-1-welcome.png|setup-1-welcome.png|Welcome
           wizard-2-release.png|setup-2-release.png|The uBlock Origin release: the newest one on GitHub, or the one bundled with the installer
           wizard-3-chrome.png|setup-3-chrome.png|Setup found $chrome. Manifest V2 extensions no longer run in this Chrome; the profiles ticked here get uBlock Origin
-          wizard-4-options.png|setup-4-options.png|The folder, maintenance and the daily update
+          wizard-4-options.png|setup-4-options.png|The folder, and a full installation with update checks or a portable one
           wizard-5-ready.png|setup-5-ready.png|Ready to install
           wizard-6-progress.png|setup-6-progress.png|Installing
           consent-1.png|setup-7-chrome-prompt.png|Chrome asks whether to allow remote debugging; Allow is the only click Setup needs in Chrome
           wizard-7-finish.png|setup-8-finish.png|Finished
           desktop-after-install.png|setup-9-chrome.png|uBlock Origin's panel on adblock-tester.com, opened from its pinned toolbar button
           maintenance-change-1-maintenance.png|setup-10-maintenance.png|The Start menu entry opens the maintenance page: Update now, Change settings or Remove
-          portable-3-options.png|setup-11-portable.png|Without maintenance, Setup leaves nothing but the folder
+          portable-3-options.png|setup-11-portable.png|A portable installation leaves nothing but the folder
           EOF
 
           if ! gh release view screenshots -R "$REPO" >/dev/null 2>&1; then

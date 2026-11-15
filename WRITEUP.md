@@ -789,18 +789,23 @@ this user or for all users; its profiles, and whether each already has both
 extensions; and the newest uBO release on GitHub and the bundled one. The
 wizard's pages show that: the release, newest or bundled, each with a link to
 its release notes; the profiles, as checkboxes; the folder, which defaults to
-`%LOCALAPPDATA%\uBOLPA`; and two options, maintenance and the daily update.
+`%LOCALAPPDATA%\uBOLPA`; and a full or a portable installation, the full one
+with a checkbox for update checks and a dropdown for their interval. Radio
+buttons cannot publish control events in Windows Installer, so the page's Next
+button sets `UBOLPA_MAINTENANCE` from the choice, and the update checkbox and
+dropdown under the unselected full installation are disabled, not unticked.
 
-With maintenance, Windows Installer installs the program to
+With the full installation, Windows Installer installs the program to
 `%LOCALAPPDATA%\Programs\ubo-lpa` and runs `install`, `timer` and `load` from it.
 The chosen folder is recorded in `HKCU\Software\ubo-lpa`, and the Start menu
 entry runs `msiexec /i` with the product code, which opens the maintenance page:
 Update now, Change settings (the same pages, with the folder fixed) or Remove.
-The daily update setting is kept in the install's state file, so a silent
-upgrade keeps it.
+`timer --interval` records the interval in the install's state file, and the
+scheduled task runs `install --if-due` daily. Whether update checks are on, and
+their interval, are kept in the state file, so a silent upgrade keeps both.
 
-Without maintenance, the wizard runs `install` and `load` from its own unpacked
-copy, while the progress page shows, and its `InstallUISequence` skips
+For a portable installation, the wizard runs `install` and `load` from its own
+unpacked copy, while the progress page shows, and its `InstallUISequence` skips
 `ExecuteAction`. Windows Installer then does not install any files or register
 the product, so the chosen folder is all that is left. Running the MSI again
 with the same folder updates it in place, with the same keys and so the same

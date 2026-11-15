@@ -17,8 +17,9 @@ and the two Installer subclasses at the bottom of this file implement it.
                            and which Chrome profiles have the extensions
     ubo-lpa.py uninstall   remove both extensions and undo the profile changes
     ubo-lpa.py timer       run install daily: a systemd user timer on Linux, a
-                           scheduled task on Windows; --off removes it, --keep
-                           sets it up unless it was switched off
+                           scheduled task on Windows; --interval sets how often
+                           that run looks for a new uBO release, --off removes
+                           it, --keep sets it up unless it was switched off
     ubo-lpa.py load        Windows: load both extensions into Chrome over its
                            DevTools connection, after a click on Allow in
                            Chrome; --profiles names the profile folders
@@ -71,6 +72,10 @@ GUARD_OPEN_RULE = {
     "condition": {"resourceTypes": ["main_frame"]},
 }
 STOCK_UBO_ID = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+# How often the timer's daily run looks for a new uBO release, in days.
+INTERVALS = {"daily": 1, "weekly": 7, "biweekly": 14, "monthly": 30}
+INTERVAL_TEXT = {"daily": "daily", "weekly": "weekly", "biweekly": "every 2 weeks",
+                 "monthly": "monthly"}
 TIMER_NAME = "ubo-lpa-update"
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -1155,29 +1160,56 @@ class Installer:
     def timer_active(self) -> bool:
         raise NotImplementedError
 
-    def apply_timer(self, mode: str) -> None:
+    def apply_timer(self, mode: str, interval: str | None = None) -> None:
         """
-        "on" schedules the daily update and "off" removes it. "keep" schedules
-        it unless it was switched off before. The setup wizard passes "keep"
+        "on" schedules the update and "off" removes it. "keep" schedules it
+        unless it was switched off before. The setup wizard passes "keep"
         when its options page is skipped, as it is after the Update button on
-        the maintenance page. The choice is kept in the state file.
+        the maintenance page. The choice, and interval when given, are kept in
+        the state file; without interval the recorded one stays.
         """
+        if interval is not None and self.owns_root():
+            self.save_state(interval=interval)
         if mode == "keep" and self.state().get("autoupdate") is False:
-            info("Daily updates stay off.")
+            info("Update checks stay off.")
             return
         if mode == "off":
             self.timer_off()
-            ok("Daily updates are off.")
+            ok("Update checks are off.")
         else:
             self.timer()
+            chosen = self.state().get("interval", "daily")
+            ok(f"uBO updates are checked {INTERVAL_TEXT.get(chosen, chosen)}.")
         if self.owns_root():
             self.save_state(autoupdate=mode != "off")
 
+    def check_due(self) -> bool:
+        """
+        Whether the timer's run looks for a new uBO release: always with the
+        daily interval, and otherwise once the interval's number of days has
+        passed since the last check. Dates are compared, not times, so the
+        timer's random delay of up to an hour does not move a check a day.
+        """
+        state = self.state()
+        interval = state.get("interval", "daily")
+        if interval == "daily" or not state.get("version"):
+            return True
+        try:
+            last = datetime.date.fromisoformat(str(state.get("last_check")))
+        except ValueError:
+            return True
+        due = last + datetime.timedelta(days=INTERVALS.get(interval, 1))
+        if datetime.date.today() >= due:
+            return True
+        info(f"uBO updates are checked {INTERVAL_TEXT.get(interval, interval)}; "
+             f"the next check is on {due.isoformat()}.")
+        return False
+
     # -- shared build
-    def install(self, quiet: bool = False) -> int:
+    def install(self, quiet: bool = False, if_due: bool = False) -> int:
         self.root.mkdir(parents=True, exist_ok=True)
         with self.lock():
-            return self._install(quiet)
+            return self._install(quiet, if_due)
 
     @staticmethod
     @contextlib.contextmanager
@@ -1214,16 +1246,21 @@ class Installer:
         finally:
             handle.close()
 
-    def _install(self, quiet: bool = False) -> int:
+    def _install(self, quiet: bool = False, if_due: bool = False) -> int:
         ubo_id, comp_id, ubo_key, comp_key = self.ids()
 
         if self.ubo_zip is not None:
             tag, from_api = ubo_zip_version(self.ubo_zip), False
+        elif if_due and not self.check_due():
+            # No release lookup, but a broken copy, or one another version of
+            # this installer built, is still rebuilt below.
+            tag, from_api = self.state().get("version"), False
         else:
             info("Checking for latest uBO release...")
             tag, from_api = resolve_latest_tag()
             if not tag:
                 die("Could not reach any uBO release.")
+            self.save_state(last_check=datetime.date.today().isoformat())
         installed = self.state().get("version")
 
         present = self.state_file.exists() and self.ext.is_dir() and self.comp.is_dir()
@@ -1750,14 +1787,14 @@ class LinuxInstaller(Installer):
         # on the user manager's environment, and uninstall can tell which
         # install the timer updates.
         argv = [esc(sys.executable), esc(script), "install", "--non-interactive",
-                "--dir", esc(self.root)]
+                "--if-due", "--dir", esc(self.root)]
         (unit_dir / f"{TIMER_NAME}.service").write_text(
             "[Unit]\nDescription=Update uBlock Origin (legacy packaged app)\n"
             "[Service]\nType=oneshot\n"
             f"ExecStart={' '.join(argv)}\n"
         )
         (unit_dir / f"{TIMER_NAME}.timer").write_text(
-            "[Unit]\nDescription=Daily uBlock Origin update\n"
+            "[Unit]\nDescription=Check for uBlock Origin updates\n"
             "[Timer]\nOnCalendar=daily\nPersistent=true\nRandomizedDelaySec=3600\n"
             "[Install]\nWantedBy=timers.target\n"
         )
@@ -1771,7 +1808,7 @@ class LinuxInstaller(Installer):
                 info(f"systemctl {args[0]} failed: {detail}")
                 info("Units written but not enabled.")
                 return
-        ok("Auto-update timer enabled (daily)")
+        ok("Update timer enabled; it runs daily.")
 
 
 class WindowsInstaller(Installer):
@@ -1872,7 +1909,7 @@ class WindowsInstaller(Installer):
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         command = pythonw if pythonw.is_file() else Path(sys.executable)
         arguments = subprocess.list2cmdline([
-            str(Path(__file__).resolve()), "install", "--non-interactive",
+            str(Path(__file__).resolve()), "install", "--non-interactive", "--if-due",
             "--dir", str(self.root),
         ])
         task = TASK_XML.format(
@@ -1890,7 +1927,7 @@ class WindowsInstaller(Installer):
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
             die(f"schtasks /Create failed: {detail}")
-        ok(f"Scheduled task {self.task_name} created (daily)")
+        ok(f"Scheduled task {self.task_name} created; it runs daily.")
 
     def load(self, user_data: Path | None = None, profiles: list[str] | None = None) -> int:
         """
@@ -2276,7 +2313,8 @@ def setup_info(installer: Installer) -> dict:
             "bundled": bundled, "bundled_url": release_url(bundled) if bundled else None,
         },
         "install": {"dir": str(installer.root), "version": state.get("version"),
-                    "autoupdate": installer.timer_active()},
+                    "autoupdate": installer.timer_active(),
+                    "interval": state.get("interval", "daily")},
     }
 
 
@@ -2856,7 +2894,14 @@ def main(argv: list[str] | None = None) -> int:
     timer_mode.add_argument("--off", action="store_true",
                             help="timer: remove the daily update")
     timer_mode.add_argument("--keep", action="store_true",
-                            help="timer: schedule the daily update unless it was switched off")
+                            help="timer: schedule the update unless it was switched off")
+    parser.add_argument("--interval", choices=list(INTERVALS), default=None,
+                        help="timer: how often the daily run looks for a new uBO release "
+                             "(monthly is every 30 days; default: the recorded interval, "
+                             "else daily)")
+    parser.add_argument("--if-due", action="store_true",
+                        help="install: skip the release lookup until the timer's interval "
+                             "has passed (the timer passes this)")
     # Tests use this to run load against a Chrome started with its own user
     # data directory.
     parser.add_argument("--user-data-dir", type=Path, default=None, help=argparse.SUPPRESS)
@@ -2889,14 +2934,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"--- {datetime.datetime.now():%Y-%m-%d %H:%M:%S} {' '.join(sys.argv[1:])}")
 
     if args.command in ("install", "update"):
-        return installer.install(quiet=args.non_interactive)
+        return installer.install(quiet=args.non_interactive, if_due=args.if_due)
     if args.command == "uninstall":
         with Installer.lock():
             installer.remove()
         return 0
     if args.command == "timer":
         with Installer.lock():
-            installer.apply_timer("off" if args.off else "keep" if args.keep else "on")
+            installer.apply_timer("off" if args.off else "keep" if args.keep else "on",
+                                  args.interval)
         return 0
     if args.command == "load":
         profiles = [p for p in args.profiles.split("|") if p] if args.profiles else None

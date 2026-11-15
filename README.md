@@ -29,12 +29,12 @@ irm https://raw.githubusercontent.com/ojura/ubo-lpa/main/install.ps1 | iex
   <sub>The Windows setup on a current Chrome, in which Manifest V2 extensions no longer run</sub>
 </p>
 
-Both set up a daily update. The Windows setup can also leave the daily update
-out, or install without maintenance and leave nothing but the uBlock Origin
-folder. The patched uBO starts with uBlock Origin's default settings; to keep
-the current ones, back them up from the stock uBO's dashboard first and restore
-them afterwards. [Installation details](#installation-details) describes each
-route.
+Both check for uBlock Origin updates daily. The Windows setup can also check
+weekly, every 2 weeks or monthly, leave the checks out, or make a portable
+installation that leaves nothing but the uBlock Origin folder. The patched uBO
+starts with uBlock Origin's default settings; to keep the current ones, back
+them up from the stock uBO's dashboard first and restore them afterwards.
+[Installation details](#installation-details) describes each route.
 
 ## How it works
 
@@ -122,7 +122,7 @@ Windows runners, and as Windows Chrome under Wine 11; see
 [install.sh](install.sh) keeps the repository in
 `~/.local/share/ubo-lpa-source` (under `$XDG_DATA_HOME` if set): a git checkout
 when git is installed, otherwise the `main` branch's archive. It runs `install`
-and `timer` from there, so the daily update keeps working as long as that
+and `timer` from there, so the update checks keep working as long as that
 directory stays. Running the one-liner again updates ubo-lpa, then uBO.
 
 From a checkout:
@@ -153,11 +153,14 @@ it.
 | `check` | verify required files, IDs, cross-references and patch markers |
 | `status` | report installed versions, IDs and paths |
 | `uninstall` | remove both extensions and undo the profile changes [listed above](#what-the-installer-does) |
-| `timer` | run `install` daily: a systemd user timer on Linux, a scheduled task on Windows; `--off` removes it, `--keep` sets it up unless it was switched off |
+| `timer` | run `install` daily: a systemd user timer on Linux, a scheduled task on Windows; `--interval` sets how often that run looks for a new uBO release (`daily`, `weekly`, `biweekly` or `monthly`), `--off` removes it, `--keep` sets it up unless it was switched off |
 | `load` | Windows: load both extensions into Chrome; `--profiles` names the profile folders, separated by `\|` |
 | `setup-info` | print, as JSON, what the Windows setup wizard shows: Chrome, its profiles and the uBO releases |
 
-The timer runs `install` once a day, whether or not Chrome is open. If a
+The timer runs `install --if-due` once a day, whether or not Chrome is open.
+With an interval longer than a day, that run looks for a new uBO release only
+once the interval has passed since the last check (monthly is every 30 days); it
+still rebuilds a broken copy, or one built by another version of ubo-lpa. If a
 profile still needs the extensions added, such as a profile created since the
 last install, the run exits with status 1 until `install` runs once with Chrome
 closed. The unit records the script's absolute path and the install directory,
@@ -183,21 +186,23 @@ built. Its wizard asks:
 - which Chrome profiles get it, on a page that shows the Chrome it found, its
   version and whether it is installed for this user or for all users;
 - which folder to keep it in, `%LOCALAPPDATA%\uBOLPA` by default;
-- whether to install maintenance and whether to update daily, both on by
-  default.
+- a full or a portable installation. A full installation, the default, adds
+  the maintenance tool and checks for uBlock Origin updates, daily by default,
+  or weekly, every 2 weeks or monthly. A portable installation adds the chosen
+  release to Chrome and nothing else, and does not update it.
 
 Setup then patches uBO into the folder and loads both extensions into the chosen
 profiles. Chrome asks once whether to allow remote debugging. With Chrome
 closed, a click on **Allow** is the only step Setup leaves to the user; with
 Chrome running, Setup first asks to restart it, and Chrome reopens its tabs.
 
-Maintenance is the updater in `%LOCALAPPDATA%\Programs\ubo-lpa`, the daily
-update, an entry in the list of installed apps and two Start menu entries.
-"Update, change or remove uBlock Origin for Chrome" reopens Setup at its
-maintenance page: **Update now**, **Change settings** (release, profiles, daily
-update) or **Remove**. "uBlock Origin update log" opens `update.log`, the output
-of the daily update and of Setup. Without maintenance, Setup works from its own temporary
-copy and leaves nothing but the uBlock Origin folder, as a portable install.
+The maintenance tool is the updater in `%LOCALAPPDATA%\Programs\ubo-lpa`, the
+update checks, an entry in the list of installed apps and two Start menu
+entries. "Update, change or remove uBlock Origin for Chrome" reopens Setup at
+its maintenance page: **Update now**, **Change settings** (release, profiles,
+update checks) or **Remove**. "uBlock Origin update log" opens `update.log`, the
+output of the update checks and of Setup. A portable installation works from
+Setup's own temporary copy and leaves nothing but the uBlock Origin folder.
 Running the MSI again with the same folder updates it, and keeps uBO's settings.
 
 #### Setup on Windows
@@ -212,7 +217,7 @@ replaced whenever a new MSI is published.
 <td align="center" valign="top" width="33%"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-3-chrome.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-3-chrome.png" width="260" alt="Chrome page"></a><br><sub>A current Chrome, without Manifest V2, and its profiles</sub></td>
 </tr>
 <tr>
-<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-4-options.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-4-options.png" width="260" alt="Options page"></a><br><sub>Folder, maintenance and daily update</sub></td>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-4-options.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-4-options.png" width="260" alt="Options page"></a><br><sub>Folder, and a full or a portable installation</sub></td>
 <td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-5-ready.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-5-ready.png" width="260" alt="Ready page"></a><br><sub>Ready to install</sub></td>
 <td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-6-progress.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-6-progress.png" width="260" alt="Progress page"></a><br><sub>Installing</sub></td>
 </tr>
@@ -223,7 +228,7 @@ replaced whenever a new MSI is published.
 </tr>
 <tr>
 <td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-10-maintenance.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-10-maintenance.png" width="260" alt="Maintenance page"></a><br><sub>Maintenance, from the Start menu</sub></td>
-<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-11-portable.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-11-portable.png" width="260" alt="Options page without maintenance"></a><br><sub>Without maintenance: a portable install</sub></td>
+<td align="center" valign="top"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-11-portable.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/setup-11-portable.png" width="260" alt="Options page without maintenance"></a><br><sub>A portable installation</sub></td>
 <td></td>
 </tr>
 </table>
@@ -254,10 +259,10 @@ well, and is needed only once:
 
 Updates replace both folders in place, Chrome keeps the extensions loaded, and
 it loads the new version at its next start. `timer` registers a scheduled task,
-`ubo-lpa-update`, that runs `install` once a day with `pythonw.exe`, without a
-console window. It runs while the user is logged on, and a day missed while the
-PC was off is caught up at the next logon. Each run appends its output to
-`update.log` in the install directory. `uninstall` removes the task. With
+`ubo-lpa-update`, that runs `install --if-due` once a day with `pythonw.exe`,
+without a console window. It runs while the user is logged on, and a day missed
+while the PC was off is caught up at the next logon. Each run appends its output
+to `update.log` in the install directory. `uninstall` removes the task. With
 `--dir`, the task name ends in a hash of the directory, so each install
 directory has its own task.
 
@@ -313,8 +318,8 @@ uninstalls. The msi job builds the MSI with
 [windows/msi/build.py](windows/msi/build.py), and
 [tests/windows/msi_test.py](tests/windows/msi_test.py) installs it through the
 wizard with a screenshot of every page, changes its settings and updates it
-from the maintenance page, upgrades it, uninstalls it, and installs it once
-more without maintenance.
+from the maintenance page, upgrades it, removes it from the maintenance page,
+and installs it once more as a portable installation.
 
 See [tests/e2e/README.md](tests/e2e/README.md) for local commands and safety
 notes.
