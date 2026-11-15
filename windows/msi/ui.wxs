@@ -155,7 +155,10 @@
         </Control>
         <Control Id="PortableText" Type="Text" X="34" Y="175" Width="316" Height="40" NoPrefix="yes" HideCondition="Installed" Text="!(loc.UboOptionsPortable)" />
 
-        <Control Id="UpdatesFixed" Type="CheckBox" X="20" Y="94" Width="212" Height="15" Property="AUTOUPDATE" CheckBoxValue="1" Text="!(loc.UboOptionsUpdates)"
+        <!-- Shown in maintenance. It and IntervalFixed share the CheckBox and
+             ComboBox table rows of Updates and Interval, which are keyed by
+             property, so they declare neither CheckBoxValue nor list items. -->
+        <Control Id="UpdatesFixed" Type="CheckBox" X="20" Y="94" Width="212" Height="15" Property="AUTOUPDATE" Text="!(loc.UboOptionsUpdates)"
                  HideCondition="NOT Installed" ShowCondition="Installed" />
         <Control Id="IntervalFixed" Type="ComboBox" X="236" Y="93" Width="86" Height="16" Property="UBOLPA_INTERVAL" ComboList="yes"
                  HideCondition="NOT Installed" ShowCondition="Installed" DisableCondition="NOT AUTOUPDATE" EnableCondition="AUTOUPDATE" />
