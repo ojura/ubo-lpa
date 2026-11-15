@@ -119,9 +119,29 @@ def die(msg: str) -> "NoReturn":  # type: ignore[valid-type]
     raise SystemExit(1)
 
 
-def ask(prompt: str, default_yes: bool) -> bool:
-    """Prompt, or take the default silently when there is no TTY (cron, CI)."""
+def interactive() -> bool:
+    """
+    True if a person can answer on stdin. On Windows isatty() is also true for
+    NUL, a character device, so stdin has to be a console as well, which
+    GetConsoleMode tells.
+    """
     if sys.stdin is None or not sys.stdin.isatty():
+        return False
+    if not IS_WINDOWS:
+        return True
+    import ctypes
+    import msvcrt
+    try:
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+    except OSError:
+        return False
+    mode = ctypes.c_uint32()
+    return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+
+
+def ask(prompt: str, default_yes: bool) -> bool:
+    """Prompt, or take the default silently when no one can answer (cron, CI)."""
+    if not interactive():
         return default_yes
     suffix = "[Y/n]" if default_yes else "[y/N]"
     try:
@@ -2539,7 +2559,7 @@ def confirm_restart() -> bool:
     there is none, as when Setup runs this."""
     text = ("To load uBlock Origin, Chrome restarts once and reopens its tabs. "
             "Chrome then asks whether to allow remote debugging: click Allow.")
-    if sys.stdin is not None and sys.stdin.isatty():
+    if interactive():
         return ask(text + " Restart Chrome now?", True)
     import ctypes
     MB_OKCANCEL, MB_ICONINFORMATION, MB_TOPMOST, MB_SETFOREGROUND, IDOK = 1, 0x40, 0x40000, 0x10000, 1
@@ -2556,7 +2576,7 @@ def choose_after_decline() -> bool:
     this. The steps page only opens on Windows, so elsewhere this cleans up.
     """
     text = "Chrome's remote debugging prompt was declined, so uBlock Origin was not loaded into Chrome."
-    if sys.stdin is not None and sys.stdin.isatty():
+    if interactive():
         warn(text)
         return ask("Show the steps for loading it by hand? No turns remote debugging off again, "
                    "and Chrome restarts and reopens its tabs.", True)
