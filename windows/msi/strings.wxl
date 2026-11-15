@@ -62,7 +62,7 @@
   <String Id="ExitDialogTitle" Value="{\WixUI_Font_Bigger}[UBOLPA_EXIT_TITLE]" />
   <String Id="ExitDialogDescription" Value="[UBOLPA_EXIT_TEXT]" />
   <String Id="UboExitReadyTitle" Value="uBlock Origin is ready" />
-  <String Id="UboExitReadyText" Value="uBlock Origin is running in Chrome. If Chrome's prompt was declined, Setup opened the steps for loading it by hand." />
+  <String Id="UboExitReadyText" Value="uBlock Origin is running in Chrome, unless its prompt was declined: Setup then offered the steps for loading it by hand." />
   <String Id="UboExitNotLoadedTitle" Value="uBlock Origin is installed" />
   <String Id="UboExitNotLoadedText" Value="Setup did not load it into Chrome: Chrome was not found, or no profile was ticked. Running Setup again loads it." />
   <String Id="UboExitRemovedTitle" Value="ubo-lpa is removed" />

@@ -33,7 +33,7 @@ import winreg
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from uia import AllowClicker, note, screenshot  # noqa: E402
+from uia import PromptClicker, note, screenshot  # noqa: E402
 
 OUT = Path(os.environ.get("UBO_OUT") or Path(tempfile.gettempdir()) / "ubo-lpa-msi")
 LOCAL = Path(os.environ["LOCALAPPDATA"])
@@ -266,7 +266,7 @@ def install_with_wizard(msi: Path) -> None:
     page(window, "wizard-4-options")
     click(window, "&Next")
     page(window, "wizard-5-ready")
-    with AllowClicker(OUT) as clicker:
+    with PromptClicker(OUT) as clicker:
         click(window, "&Install")
         page(window, "wizard-6-progress", wait=4)
         wait_for_finish(window)
@@ -277,6 +277,36 @@ def install_with_wizard(msi: Path) -> None:
     click(window, "&Finish")
     check(process.wait(timeout=120) == 0, f"msiexec /i exited with {process.returncode}")
     show_ubo_panel(OUT / "desktop-after-install.png")
+    show_extensions_page(OUT / "extensions-page.png")
+
+
+def show_extensions_page(path: Path) -> None:
+    """
+    Take the screenshot for the steps for loading by hand: Chrome's
+    extensions page as Setup left it, with Developer mode on, Load unpacked
+    and both extensions. Chrome ignores chrome:// addresses on its command
+    line, so the address is typed into the address bar. A failure here leaves
+    the screenshot out, and the test goes on.
+    """
+    try:
+        from pywinauto import Desktop
+        from pywinauto.keyboard import send_keys
+        windows = [w for w in Desktop(backend="uia").windows()
+                   if w.element_info.class_name.startswith("Chrome_WidgetWin")
+                   and w.window_text().endswith("Google Chrome")]
+        if not windows:
+            note("did not find Chrome's window for the extensions page")
+            return
+        window = windows[0]
+        window.set_focus()
+        send_keys("{ESC}")  # closes uBO's panel, which show_ubo_panel opened
+        send_keys("^l")
+        send_keys("chrome://extensions{ENTER}")
+        time.sleep(4)
+        window.capture_as_image().save(path)
+        note(f"screenshot {path.name}")
+    except Exception as exc:  # windows come and go while they are listed
+        note(f"the extensions page: {type(exc).__name__}: {exc}")
 
 
 def show_ubo_panel(path: Path) -> None:
@@ -385,7 +415,7 @@ def install_portable(msi: Path) -> str:
     page(window, "portable-3-options")
     click(window, "&Next")
     page(window, "portable-4-ready")
-    with AllowClicker(OUT / "portable") as clicker:
+    with PromptClicker(OUT / "portable") as clicker:
         click(window, "&Install")
         wait_for_finish(window)
     check(clicker.prompts == 1,

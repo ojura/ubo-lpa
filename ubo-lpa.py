@@ -1934,14 +1934,19 @@ class WindowsInstaller(Installer):
         Load both folders into Chrome over its DevTools connection: into the
         given profile folders or, when none are given, into the profile Chrome
         opens. When that fails, print the reason and open a page with the
-        manual steps.
+        manual steps, unless the user chose to clean up after declining
+        Chrome's prompt.
         """
+        self.show_guide = True
+        self.remote_debugging_left_on = False
         try:
             return self._load(user_data, profiles)
         except SystemExit as exc:
-            if exc.code and user_data is None:
+            if exc.code and user_data is None and self.show_guide:
                 guide = self.root / "load-by-hand.html"
+                extra = REMOTE_DEBUGGING_STEP if self.remote_debugging_left_on else ""
                 guide.write_text(GUIDE_HTML.replace("__INTRO__", guide_intro(guide))
+                                 .replace("__EXTRA__", extra)
                                  .replace("__EXT__", html.escape(str(self.ext)))
                                  .replace("__COMP__", html.escape(str(self.comp))),
                                  encoding="utf-8")
@@ -2000,8 +2005,7 @@ class WindowsInstaller(Installer):
             devtools = DevTools(*connection, consent_timeout=300)
         except (DevToolsRefused, OSError) as exc:
             if switched_on:
-                warn("Remote debugging stays on in Chrome; it can be turned off at "
-                     "chrome://inspect/#remote-debugging.")
+                self._after_decline(chrome, user_data, explicit)
             die(f"Chrome did not allow the connection ({exc}).")
         try:
             for profile in pending:
@@ -2022,6 +2026,25 @@ class WindowsInstaller(Installer):
             if switched_on:
                 switch_off_remote_debugging(devtools, user_data)
         return 0
+
+    def _after_decline(self, chrome: str | None, user_data: Path, explicit: bool) -> None:
+        """
+        Chrome's prompt was declined, or went unanswered, after load switched
+        remote debugging on. Ask whether to show the steps for loading by
+        hand, which end with turning remote debugging off, or to clean up:
+        turn it off again now, which takes a restart of Chrome.
+        """
+        if choose_after_decline():
+            self.remote_debugging_left_on = True
+            warn("Remote debugging stays on in Chrome; the last of the steps turns it off.")
+            return
+        self.show_guide = False
+        close_chrome(user_data)
+        set_remote_debugging_pref(user_data, False)
+        if chrome is not None:
+            flags = [f"--user-data-dir={user_data}"] if explicit else []
+            launch_chrome(chrome, [*flags, "--restore-last-session"])
+        ok("Turned remote debugging off again; Chrome reopens its tabs.")
 
     def _load_with(self, devtools: DevTools, session: str, ubo_id: str, comp_id: str) -> None:
         for _ in range(150):
@@ -2525,6 +2548,30 @@ def confirm_restart() -> bool:
         MB_OKCANCEL | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND) == IDOK
 
 
+def choose_after_decline() -> bool:
+    """
+    After Chrome's prompt was declined, ask whether to show the steps for
+    loading by hand (True) or to turn remote debugging off again (False): in
+    the console, or in a message box when there is none, as when Setup runs
+    this. The steps page only opens on Windows, so elsewhere this cleans up.
+    """
+    text = "Chrome's remote debugging prompt was declined, so uBlock Origin was not loaded into Chrome."
+    if sys.stdin is not None and sys.stdin.isatty():
+        warn(text)
+        return ask("Show the steps for loading it by hand? No turns remote debugging off again, "
+                   "and Chrome restarts and reopens its tabs.", True)
+    if not IS_WINDOWS:
+        return False
+    import ctypes
+    MB_YESNO, MB_ICONQUESTION, MB_TOPMOST, MB_SETFOREGROUND, IDYES = 4, 0x20, 0x40000, 0x10000, 6
+    return ctypes.windll.user32.MessageBoxW(
+        None,
+        f"{text}\n\nYes: show the steps for loading it by hand.\n"
+        "No: turn remote debugging off again. Chrome restarts and reopens its tabs.",
+        "uBlock Origin for Chrome",
+        MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND) == IDYES
+
+
 def close_chrome(user_data: Path) -> None:
     """Close Chrome as its window's close button does, so it saves its session;
     force it only if it keeps running, as it does with background apps."""
@@ -2600,6 +2647,12 @@ def switch_off_remote_debugging(devtools: DevTools, user_data: Path) -> None:
     ok("Turned remote debugging off again.")
 
 
+# The last step of load-by-hand.html when load left remote debugging on.
+REMOTE_DEBUGGING_STEP = """
+  <li>Turn remote debugging off again: open this page and untick
+    <b>Allow remote debugging for this browser instance</b>.
+    <div class="copy"><code>chrome://inspect/#remote-debugging</code><button>Copy</button></div></li>"""
+
 GUIDE_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Load uBlock Origin in Chrome</title>
 <style>
@@ -2619,6 +2672,9 @@ GUIDE_HTML = """<!doctype html>
          border-radius: 6px; padding: 7px 10px; overflow-wrap: anywhere; }
   button { font: inherit; font-size: 13px; border: 1px solid #8c1c13; color: #8c1c13; background: #fff;
            border-radius: 6px; padding: 0 14px; cursor: pointer; }
+  figure { margin: 22px 0 0; }
+  figure img { max-width: 100%; border: 1px solid #d8dee4; border-radius: 10px; }
+  figcaption { font-size: 13px; color: #59636e; margin-top: 6px; }
 </style></head>
 <body>
 <header><h1>Load uBlock Origin in Chrome</h1>
@@ -2632,8 +2688,13 @@ GUIDE_HTML = """<!doctype html>
   <li>Click <b>Load unpacked</b> again and select the toolbar button's folder.
     <div class="copy"><code>__COMP__</code><button>Copy</button></div></li>
   <li>Click <b>Details</b> on <b>uBlock Origin toolbar button</b> and turn on <b>Allow user scripts</b>.</li>
-  <li>Pin <b>uBlock Origin toolbar button</b> from the puzzle-piece menu next to the address bar.</li>
-</ol></main>
+  <li>Pin <b>uBlock Origin toolbar button</b> from the puzzle-piece menu next to the address bar.</li>__EXTRA__
+</ol>
+<figure><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/load-by-hand.png"
+  alt="Chrome's extensions page with Developer mode on, the Load unpacked button, and both extensions">
+<figcaption>Chrome's extensions page after steps 1 to 4: Developer mode is on, Load unpacked is next to
+  it, and both extensions are listed.</figcaption></figure>
+</main>
 <script>
 for (const b of document.querySelectorAll(".copy button"))
   b.onclick = () => navigator.clipboard.writeText(b.previousElementSibling.textContent)

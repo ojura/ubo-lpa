@@ -257,6 +257,14 @@ well, and is needed only once:
 5. Open **Details** of "uBlock Origin toolbar button" and turn on **Allow user
    scripts**, so uBO's scriptlets run before the page's own scripts
 
+<p align="center"><a href="https://github.com/ojura/ubo-lpa/releases/download/screenshots/load-by-hand.png"><img src="https://github.com/ojura/ubo-lpa/releases/download/screenshots/load-by-hand.png" width="640" alt="Chrome's extensions page with Developer mode on, the Load unpacked button, and both extensions"></a>
+<br><sub>Chrome's extensions page after steps 1 to 4</sub></p>
+
+If Chrome's prompt is declined after `load` turned remote debugging on, `load`
+asks what to do next: show the steps above, which then end with turning remote
+debugging off at `chrome://inspect/#remote-debugging`, or clean up, which turns
+it off again right away and restarts Chrome with its tabs.
+
 Updates replace both folders in place, Chrome keeps the extensions loaded, and
 it loads the new version at its next start. `timer` registers a scheduled task,
 `ubo-lpa-update`, that runs `install --if-due` once a day with `pythonw.exe`,

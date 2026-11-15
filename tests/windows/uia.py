@@ -1,6 +1,7 @@
 """
-What the Windows tests do in place of a user: click Allow in Chrome's remote
-debugging prompt, and take screenshots. Needs pywinauto and Pillow.
+What the Windows tests do in place of a user: answer Chrome's remote
+debugging prompt and ubo-lpa.py's message box, and take screenshots. Needs
+pywinauto and Pillow.
 """
 
 from __future__ import annotations
@@ -14,21 +15,27 @@ def note(msg: str) -> None:
     print(f"[windows] {msg}", flush=True)
 
 
-class AllowClicker:
+class PromptClicker:
     """
-    Click Allow in Chrome's "Allow remote debugging?" prompt whenever it
-    appears, through UI Automation's Invoke pattern, until stopped. `prompts`
-    counts the prompts: a prompt still open after a click is clicked again,
-    and counted once.
+    Click `button`, Allow by default, in Chrome's "Allow remote debugging?"
+    prompt whenever it appears, through UI Automation's Invoke pattern, until
+    stopped. `prompts` counts the prompts: a prompt still open after a click
+    is clicked again, and counted once. With `dialog`, also click the button
+    of that name in ubo-lpa.py's message box, titled "uBlock Origin for
+    Chrome"; `answered` counts those clicks.
     """
 
-    def __init__(self, shots: Path | None = None) -> None:
+    def __init__(self, shots: Path | None = None, button: str = "Allow",
+                 dialog: str | None = None) -> None:
         self.prompts = 0
+        self.answered = 0
         self.shots = shots
+        self.button = button
+        self.dialog = dialog
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
-    def __enter__(self) -> "AllowClicker":
+    def __enter__(self) -> "PromptClicker":
         self._thread.start()
         return self
 
@@ -36,29 +43,44 @@ class AllowClicker:
         self._stop.set()
         self._thread.join(10)
 
-    @staticmethod
-    def _allow_buttons() -> list:
+    def _prompt_buttons(self) -> list:
         from pywinauto import Desktop
         return [button
                 for window in Desktop(backend="uia").windows()
                 if window.element_info.class_name.startswith("Chrome_WidgetWin")
-                for button in window.descendants(control_type="Button", title="Allow")]
+                for button in window.descendants(control_type="Button", title=self.button)]
+
+    def _dialog_buttons(self) -> list:
+        from pywinauto import Desktop
+        return [button
+                for window in Desktop(backend="uia").windows()
+                if window.window_text() == "uBlock Origin for Chrome"
+                and window.element_info.class_name == "#32770"
+                for button in window.descendants(control_type="Button", title=self.dialog)]
 
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                buttons = self._allow_buttons()
+                if self.dialog:
+                    answers = self._dialog_buttons()
+                    if answers:
+                        if self.shots is not None:
+                            screenshot(self.shots / f"dialog-{self.answered + 1}.png")
+                        answers[0].invoke()
+                        self.answered += 1
+                        note(f"clicked {self.dialog} in ubo-lpa.py's message box")
+                buttons = self._prompt_buttons()
                 if buttons:
                     self.prompts += 1
                     if self.shots is not None:
                         screenshot(self.shots / f"consent-{self.prompts}.png")
                     for attempt in range(1, 6):
                         buttons[0].invoke()
-                        note(f"clicked Allow in Chrome's remote debugging prompt (click {attempt})")
+                        note(f"clicked {self.button} in Chrome's remote debugging prompt (click {attempt})")
                         deadline = time.monotonic() + 3
-                        while time.monotonic() < deadline and self._allow_buttons():
+                        while time.monotonic() < deadline and self._prompt_buttons():
                             time.sleep(0.25)
-                        buttons = self._allow_buttons()
+                        buttons = self._prompt_buttons()
                         if not buttons:
                             break
             except Exception as exc:  # windows come and go while they are listed

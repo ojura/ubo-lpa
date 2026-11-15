@@ -1,8 +1,8 @@
 """
 Test ubo-lpa.py on a real Windows machine (the GitHub Actions Windows runner),
 with the retail Chrome installed there: install, the scheduled task that
-updates the install, load with a click on Allow in Chrome's prompt, an update
-while Chrome has both extensions loaded, and uninstall.
+updates the install, load with Chrome's prompt declined and then allowed, an
+update while Chrome has both extensions loaded, and uninstall.
 
 UI Automation clicks Allow, as a user would (tests/windows/uia.py). Chrome
 runs on its default user data directory, which a first run of Chrome on the
@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from uia import AllowClicker, note, screenshot  # noqa: E402
+from uia import PromptClicker, note, screenshot  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "ubo-lpa.py"
@@ -142,12 +142,55 @@ def test_timer(task: str) -> None:
         raise Failure('the scheduled run did not log "No changes made."')
 
 
+def remote_debugging_on() -> bool:
+    local_state = json.loads((USER_DATA / "Local State").read_text(encoding="utf-8"))
+    return bool(local_state.get("devtools", {}).get("remote_debugging", {}).get("user-enabled"))
+
+
+def test_decline(module) -> None:
+    """
+    load with Chrome closed, and Cancel in Chrome's prompt. load then asks
+    whether to show the steps for loading by hand. No turns remote debugging
+    off again, restarts Chrome and writes no page; Yes writes the page, whose
+    last step turns remote debugging off.
+    """
+    guide = ROOT / "load-by-hand.html"
+    for answer in ("No", "Yes"):
+        close_chrome()
+        first_run_done()
+        guide.unlink(missing_ok=True)
+        with PromptClicker(OUT, button="Cancel", dialog=answer) as clicker:
+            output = ubo_lpa(f"load-declined-{answer.lower()}", "load", expect=1)
+        if clicker.prompts != 1 or clicker.answered != 1:
+            raise Failure(f"declining with {answer}: {clicker.prompts} prompts, "
+                          f"{clicker.answered} answers in load's message box")
+        if answer == "No":
+            if "Turned remote debugging off again" not in output:
+                raise Failure("No after a decline did not turn remote debugging off")
+            if guide.exists():
+                raise Failure("No after a decline still wrote the steps for loading by hand")
+            close_chrome()
+            if remote_debugging_on():
+                raise Failure("remote debugging is still on after No")
+        else:
+            page = guide.read_text(encoding="utf-8") if guide.exists() else ""
+            if "chrome://inspect/#remote-debugging" not in page:
+                raise Failure("Yes after a decline did not write the steps, with the step "
+                              "that turns remote debugging off")
+            # The page opened in the default browser; the next test needs
+            # Chrome closed with remote debugging off.
+            subprocess.run(["taskkill", "/im", "msedge.exe"], capture_output=True)
+            close_chrome()
+            module.set_remote_debugging_pref(USER_DATA, False)
+        note(f"declined, answered {answer}: as expected")
+
+
 def test_load(module, ubo_id: str, comp_id: str) -> None:
     """load with Chrome closed: it switches remote debugging on, starts Chrome,
     loads both folders after the click on Allow, and switches it off again."""
     close_chrome()
     first_run_done()
-    with AllowClicker(OUT) as clicker:
+    with PromptClicker(OUT) as clicker:
         output = ubo_lpa("load", "load")
     screenshot(OUT / "after-load.png")
     if clicker.prompts != 1:
@@ -236,6 +279,7 @@ def main() -> int:
         test_install()
         state = json.loads((ROOT / ".state.json").read_text())
         test_timer(task)
+        test_decline(module)
         test_load(module, state["ext_id"], state["comp_id"])
         test_update_while_chrome_runs()
         test_uninstall(task)

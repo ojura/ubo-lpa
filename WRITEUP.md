@@ -732,7 +732,13 @@ when it starts and writes back when it exits. `load` therefore:
    above the others every half second, for six seconds at most, by making each
    one topmost and then not topmost again. Only the foreground process may
    bring a window to the front with `SetForegroundWindow`, and Setup's window
-   is in front, so the prompt would otherwise open behind it.
+   is in front, so the prompt would otherwise open behind it. If the prompt
+   is declined, or not answered within five minutes, and `load` turned
+   remote debugging on in step 2, it asks whether to show the steps for
+   loading by hand or to clean up. The steps page (`load-by-hand.html`) then
+   ends with unticking the setting on `chrome://inspect/#remote-debugging`;
+   cleaning up closes Chrome, sets the value in `Local State` back to false
+   and starts Chrome with `--restore-last-session`.
 
 On the connection, `load` opens `chrome://extensions` and calls the page's own
 `chrome.developerPrivate` API: `updateProfileConfiguration({inDeveloperMode:
